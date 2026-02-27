@@ -1,0 +1,27 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
+frontend/vite-project/
+/package-lock.json
+
+# Node
+node_modules/
+
+# Databases
+*.db
+
+# Environment
+.env
+
+# VS Code
+.vscode/
+
+# Reports
+Threat_Report_*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
