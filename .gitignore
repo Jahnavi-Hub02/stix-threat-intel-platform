@@ -2,25 +2,26 @@
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .coverage
-.pytest_cache/
-frontend/vite-project/
-/package-lock.json
-
-# Node
-node_modules/
-
-# Databases
-*.db
 
 # Environment
 .env
 
-# VS Code
-.vscode/
+# Database
+*.db
+database/
 
 # Reports
 Threat_Report_*.pdf
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
 
 # OS
 .DS_Store

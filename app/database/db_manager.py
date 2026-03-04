@@ -256,6 +256,18 @@ def get_db_stats():
     """)
     top_threats = [dict(r) for r in cursor.fetchall()]
 
+    # ML anomaly stats (table may not exist yet)
+    ml_stats = {"total_ml_events": 0, "total_anomalies": 0, "model_trained": False}
+    try:
+        cursor.execute("SELECT COUNT(*) FROM ml_events")
+        ml_stats["total_ml_events"] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM ml_events WHERE is_anomaly = 1")
+        ml_stats["total_anomalies"] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM ml_model_runs WHERE status = \'success\'")
+        ml_stats["model_trained"] = cursor.fetchone()[0] > 0
+    except Exception:
+        pass
+
     conn.close()
 
     return {
@@ -263,5 +275,6 @@ def get_db_stats():
         "total_events": total_events,
         "total_correlations": total_correlations,
         "severity_breakdown": {"critical": critical, "high": high},
-        "top_threats": top_threats
+        "top_threats": top_threats,
+        "ml": ml_stats,
     }
