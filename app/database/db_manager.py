@@ -86,9 +86,37 @@ def create_tables():
     )
     """)
 
+
+    # Users table — stores registered platform users
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        username      TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'viewer',
+        is_active     INTEGER NOT NULL DEFAULT 1,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login    TIMESTAMP
+    )
+    """)
+
+    # Refresh tokens table — allows token revocation on logout
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        jti        TEXT UNIQUE NOT NULL,
+        user_id    INTEGER NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        revoked    INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database tables created/verified")
+
 
 
 def insert_indicators(indicators, source_label="Unknown"):
@@ -278,3 +306,147 @@ def get_db_stats():
         "top_threats": top_threats,
         "ml": ml_stats,
     }
+
+
+# ── User Management ───────────────────────────────────────────────
+
+def create_user(username: str, password_hash: str, role: str = "viewer") -> dict:
+    """Create a new user. Returns the created user dict or raises ValueError on duplicate."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username.lower(), password_hash, role)
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+        return {"user_id": user_id, "username": username.lower(), "role": role}
+    except Exception as e:
+        if "UNIQUE constraint" in str(e):
+            raise ValueError(f"Username '{username}' is already taken.")
+        raise
+    finally:
+        conn.close()
+
+
+def get_user_by_username(username: str) -> dict | None:
+    """Fetch a user dict by username, or None if not found."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, username, password_hash, role, is_active, created_at, last_login "
+        "FROM users WHERE username = ? AND is_active = 1",
+        (username.lower(),)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)
+
+
+def get_user_by_id(user_id: int) -> dict | None:
+    """Fetch a user dict by ID, or None if not found."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, username, role, is_active, created_at, last_login "
+        "FROM users WHERE id = ? AND is_active = 1",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_last_login(user_id: int) -> None:
+    """Stamp last_login timestamp on successful login."""
+    conn = create_connection()
+    conn.execute(
+        "UPDATE users SET last_login = ? WHERE id = ?",
+        (_now(), user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_users() -> list:
+    """Return all users (without password hashes) for admin use."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, username, role, is_active, created_at, last_login "
+        "FROM users ORDER BY created_at DESC"
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def deactivate_user(user_id: int) -> bool:
+    """Soft-delete a user (sets is_active=0). Returns True if found."""
+    conn    = create_connection()
+    cursor  = conn.cursor()
+    cursor.execute("UPDATE users SET is_active = 0 WHERE id = ?", (user_id,))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
+# ── Refresh Token Management ──────────────────────────────────────
+
+def store_refresh_token(jti: str, user_id: int, expires_at: str) -> None:
+    """Persist a refresh token JTI so we can revoke it on logout."""
+    conn = create_connection()
+    conn.execute(
+        "INSERT INTO refresh_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
+        (jti, user_id, expires_at)
+    )
+    conn.commit()
+    conn.close()
+
+
+def is_refresh_token_valid(jti: str) -> bool:
+    """Return True if the JTI exists, is not revoked, and has not expired."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT revoked, expires_at FROM refresh_tokens WHERE jti = ?",
+        (jti,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return False
+    if row["revoked"]:
+        return False
+    # Check expiry
+    try:
+        from datetime import datetime, timezone
+        expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def revoke_refresh_token(jti: str) -> None:
+    """Mark a refresh token as revoked (logout)."""
+    conn = create_connection()
+    conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE jti = ?", (jti,))
+    conn.commit()
+    conn.close()
+
+
+def revoke_all_user_tokens(user_id: int) -> None:
+    """Revoke all refresh tokens for a user (force logout everywhere)."""
+    conn = create_connection()
+    conn.execute(
+        "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()

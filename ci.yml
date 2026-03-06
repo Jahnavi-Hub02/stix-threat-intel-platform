@@ -1,0 +1,222 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "18"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# ─────────────────────────────────────────────────────────────────
+# Job 1: Run full Python test suite
+# ─────────────────────────────────────────────────────────────────
+jobs:
+  test:
+    name: Test Suite (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create required directories
+        run: |
+          mkdir -p database models data
+
+      - name: Run database tests
+        run: pytest tests/test_database.py -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+
+      - name: Run core unit tests
+        run: pytest tests/test_core.py -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+
+      - name: Run API tests
+        run: pytest tests/test_api.py -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+
+      - name: Run authentication tests
+        run: pytest tests/test_auth.py -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+
+      - name: Run ML anomaly detection tests
+        run: pytest tests/test_ml.py -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+          ML_MIN_TRAIN_SAMPLES: "5"
+
+      - name: Run pipeline integration tests
+        run: pytest tests/test_pipeline.py -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+
+      - name: Run full test suite with coverage
+        run: |
+          pip install pytest-cov
+          pytest tests/ -v --tb=short \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --ignore=tests/test_placeholder.py
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-secret-key-for-ci-only
+          ML_MIN_TRAIN_SAMPLES: "5"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.11'
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────
+  # Job 2: Build and test the React frontend
+  # ───────────────────────────────────────────────────────────────
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build production bundle
+        working-directory: frontend
+        run: npm run build
+        env:
+          VITE_API_URL: https://your-api.onrender.com
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/dist/
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────
+  # Job 3: Docker build (runs on main branch only, after tests pass)
+  # ───────────────────────────────────────────────────────────────
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [test, frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            GIT_COMMIT=${{ github.sha }}
+
+  # ───────────────────────────────────────────────────────────────
+  # Job 4: Security scan (runs on main push)
+  # ───────────────────────────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install audit tools
+        run: pip install safety bandit
+
+      - name: Check for known CVEs in dependencies
+        run: safety check -r requirements.txt --output text
+        continue-on-error: true   # warn but don't block deploy
+
+      - name: Static security analysis (bandit)
+        run: |
+          bandit -r app/ \
+            --skip B101,B608 \
+            --format txt \
+            --severity-level medium
+        continue-on-error: true

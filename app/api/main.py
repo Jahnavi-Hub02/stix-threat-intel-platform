@@ -1,10 +1,43 @@
 """
-STIX 2.1 Threat Intelligence Correlation Platform — REST API v2.2.0
+STIX 2.1 Threat Intelligence Correlation Platform — REST API v2.3.0
 ====================================================================
-ML anomaly detection (Isolation Forest) is mounted via app/api/ml.py router.
+v2.3.0 — JWT Authentication added
+
+Public endpoints  (no token required):
+  GET  /          health root
+  GET  /health    Docker healthcheck
+  POST /auth/register
+  POST /auth/login
+  POST /auth/refresh
+  POST /auth/logout
+  POST /auth/logout-all
+
+Viewer endpoints  (any valid token):
+  GET  /metrics
+  GET  /iocs
+  GET  /iocs/{value}
+  GET  /correlations
+  GET  /ml/status
+  GET  /scheduler/status
+  GET  /ingest/servers
+  GET  /auth/me
+
+Analyst endpoints (role >= analyst):
+  POST /event
+  POST /ml/train
+  POST /ml/predict
+  POST /manual-ingest
+  POST /ingest/file
+  POST /ingest/taxii
+  POST /ingest/trigger
+
+Admin endpoints   (role == admin):
+  GET  /auth/users
+  DELETE /auth/users/{id}
 """
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
@@ -23,9 +56,8 @@ from app.ingestion import (
     TAXIIClient, start_scheduler, get_scheduler_status,
     trigger_ingestion_now, get_public_servers,
 )
-
-# ML router — imported here so tests can patch detector before TestClient init
 from app.api.ml import router as ml_router
+from app.auth import auth_router, verify_token, require_role
 
 logger = get_logger(__name__)
 
@@ -72,14 +104,12 @@ class FileIngestRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_tables()
-    # Warm up ML detector (creates ml_events table, loads model from disk if exists)
     try:
         from app.ml.detector import get_detector
         get_detector()
         logger.info("ML anomaly detector initialised")
     except Exception as e:
         logger.error("ML detector init failed (continuing without ML): %s", str(e))
-    # Start TAXII scheduler
     try:
         start_scheduler(interval_minutes=30)
         logger.info("TAXII scheduler started")
@@ -91,27 +121,33 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="STIX 2.1 Threat Intelligence Correlation Platform",
     description=(
-        "Real-time threat intelligence correlation using STIX/TAXII standards "
-        "with Isolation Forest ML anomaly detection."
+        "Real-time threat intelligence with IOC correlation, Isolation Forest ML anomaly detection, "
+        "and JWT authentication.\n\n"
+        "**To use protected endpoints:**\n"
+        "1. Register: `POST /auth/register`\n"
+        "2. Login: `POST /auth/login` → copy `access_token`\n"
+        "3. Click **Authorize** (🔒) and paste: `Bearer <access_token>`"
     ),
-    version="2.2.0",
+    version="2.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
 )
 
-# Mount ML router at /ml
-app.include_router(ml_router)
+# Mount routers
+app.include_router(auth_router)   # /auth/*  (public + protected)
+app.include_router(ml_router)     # /ml/*    (viewer/analyst)
 
 
-# ── Health ─────────────────────────────────────────────────────────
+# ── Public Health ──────────────────────────────────────────────────
 
 @app.get("/", tags=["Health"])
 def root():
     return {
         "platform":  "STIX 2.1 Threat Intelligence Correlation Platform",
-        "version":   "2.2.0",
+        "version":   "2.3.0",
         "status":    "operational",
+        "auth":      "JWT Bearer token required for protected endpoints",
         "docs":      "/docs",
         "timestamp": _now(),
     }
@@ -122,13 +158,16 @@ def health():
     return {"status": "ok"}
 
 
+# ── Protected: Metrics ─────────────────────────────────────────────
+
 @app.get("/metrics", tags=["Health"])
-def get_metrics():
+def get_metrics(user: dict = Depends(verify_token)):
     stats     = get_db_stats()
     scheduler = get_scheduler_status()
     return {
         "timestamp":  _now(),
         "statistics": stats,
+        "requested_by": user["sub"],
         "scheduler": {
             "running":    scheduler.get("is_running", False),
             "next_run":   scheduler.get("next_run"),
@@ -137,13 +176,14 @@ def get_metrics():
     }
 
 
-# ── IOCs ───────────────────────────────────────────────────────────
+# ── Protected: IOCs (viewer+) ──────────────────────────────────────
 
 @app.get("/iocs", tags=["IOCs"])
 def list_iocs(
     limit:    int           = Query(50, ge=1, le=500),
     offset:   int           = Query(0, ge=0),
-    ioc_type: Optional[str] = Query(None, description="Filter: ipv4, domain, url, sha256, md5"),
+    ioc_type: Optional[str] = Query(None),
+    user:     dict          = Depends(verify_token),
 ):
     iocs = get_all_iocs(limit=limit, offset=offset, ioc_type=ioc_type)
     return {"total": len(iocs), "limit": limit, "offset": offset,
@@ -151,7 +191,7 @@ def list_iocs(
 
 
 @app.get("/iocs/{ioc_value:path}", tags=["IOCs"])
-def lookup_ioc(ioc_value: str):
+def lookup_ioc(ioc_value: str, user: dict = Depends(verify_token)):
     from app.database.db_manager import create_connection
     conn   = create_connection()
     cursor = conn.cursor()
@@ -163,10 +203,9 @@ def lookup_ioc(ioc_value: str):
     return {"status": "found", "ioc": dict(row)}
 
 
-# ── Events (IOC + ML merged) ───────────────────────────────────────
+# ── Protected: Events (analyst+) ──────────────────────────────────
 
 def _run_ml_analysis(event_dict: dict) -> dict:
-    """Run ML anomaly detection; return safe fallback dict on any failure."""
     try:
         from app.ml.detector import get_detector
         return get_detector().analyze(event_dict)
@@ -174,7 +213,7 @@ def _run_ml_analysis(event_dict: dict) -> dict:
         return {
             "ml_status": "unavailable", "anomaly_detected": False,
             "anomaly_score": 0.0, "confidence": "none", "risk_contribution": 0,
-            "explanation": "scikit-learn not installed. Run: pip install scikit-learn numpy joblib",
+            "explanation": "scikit-learn not installed.",
         }
     except Exception as e:
         logger.error("ML analysis failed (non-fatal): %s", str(e))
@@ -186,12 +225,13 @@ def _run_ml_analysis(event_dict: dict) -> dict:
 
 
 @app.post("/event", tags=["Events"])
-def submit_event(event: EventRequest):
+def submit_event(
+    event: EventRequest,
+    user:  dict = Depends(require_role("analyst")),
+):
     """
-    Submit a network event for dual-layer analysis:
-      Layer 1 — IOC correlation (signature-based, against STIX database)
-      Layer 2 — Isolation Forest anomaly detection (behaviour-based ML)
-    Final risk score = IOC risk + ML boost (capped at 100).
+    Submit a network event for dual-layer threat analysis.
+    Requires analyst role or higher.
     """
     event_dict = event.model_dump()
     if not event_dict.get("timestamp"):
@@ -208,30 +248,29 @@ def submit_event(event: EventRequest):
     ioc_hit    = len(ioc_results) > 0
     ml_anomaly = ml_result.get("anomaly_detected", False)
 
-    if   ioc_hit and ml_anomaly: status = "confirmed_threat"
-    elif ioc_hit:                status = "threat_detected"
-    elif ml_anomaly:             status = "anomaly_detected"
-    else:                        status = "benign"
+    if   ioc_hit and ml_anomaly: status_val = "confirmed_threat"
+    elif ioc_hit:                status_val = "threat_detected"
+    elif ml_anomaly:             status_val = "anomaly_detected"
+    else:                        status_val = "benign"
 
     report_path = generate_report(event_dict, ioc_results, ml_result=ml_result)
 
     response = {
-        "status":           status,
+        "status":           status_val,
         "event_id":         event.event_id,
+        "submitted_by":     user["sub"],
         "final_risk_score": final_risk,
         "final_severity":   final_sev,
         "ioc_analysis":     {"matches_found": len(ioc_results), "results": ioc_results},
         "ml_analysis":      ml_result,
         "report":           report_path,
     }
-    # Legacy fields kept for dashboard backward-compat
     if ioc_results:
         top = max(ioc_results,
-                  key=lambda r: {"Critical":4,"High":3,"Medium":2,"Low":1}.get(r.get("severity","Low"), 0))
+                  key=lambda r: {"Critical":4,"High":3,"Medium":2,"Low":1}.get(r.get("severity","Low"),0))
         response["threats_found"]  = len(ioc_results)
         response["top_severity"]   = top.get("severity")
         response["top_risk_score"] = top.get("risk_score")
-
     return response
 
 
@@ -239,15 +278,16 @@ def submit_event(event: EventRequest):
 def list_correlations(
     event_id: Optional[str] = Query(None),
     limit:    int            = Query(50, ge=1, le=200),
+    user:     dict           = Depends(verify_token),
 ):
     results = get_correlation_results(event_id=event_id, limit=limit)
     return {"total": len(results), "results": results}
 
 
-# ── Reports ────────────────────────────────────────────────────────
+# ── Protected: Reports (viewer+) ──────────────────────────────────
 
 @app.get("/report/{event_id}", tags=["Reports"])
-def download_report(event_id: str):
+def download_report(event_id: str, user: dict = Depends(verify_token)):
     report_path = f"Threat_Report_{event_id}.pdf"
     if not os.path.exists(report_path):
         raise HTTPException(status_code=404,
@@ -256,10 +296,13 @@ def download_report(event_id: str):
                         filename=report_path)
 
 
-# ── Ingestion ──────────────────────────────────────────────────────
+# ── Protected: Ingestion (analyst+) ───────────────────────────────
 
 @app.post("/manual-ingest", tags=["Ingestion"])
-def manual_ingest(feed_type: str = Query("json")):
+def manual_ingest(
+    feed_type: str  = Query("json"),
+    user:      dict = Depends(require_role("analyst")),
+):
     results = {"json": 0, "xml": 0}
     if feed_type in ["json", "both"] and os.path.exists("data/TI_GOV.json"):
         r = insert_indicators(parse_stix_json("data/TI_GOV.json")) or {"stored": 0}
@@ -271,7 +314,10 @@ def manual_ingest(feed_type: str = Query("json")):
 
 
 @app.post("/ingest/file", tags=["Ingestion"])
-def ingest_from_file(request: FileIngestRequest):
+def ingest_from_file(
+    request: FileIngestRequest,
+    user:    dict = Depends(require_role("analyst")),
+):
     if not os.path.exists(request.file_path):
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     file_type = request.file_type.lower()
@@ -293,7 +339,11 @@ def ingest_from_file(request: FileIngestRequest):
 
 
 @app.post("/ingest/taxii", tags=["Ingestion"])
-def ingest_from_taxii(request: TAXIIIngestRequest, background_tasks: BackgroundTasks):
+def ingest_from_taxii(
+    request:          TAXIIIngestRequest,
+    background_tasks: BackgroundTasks,
+    user:             dict = Depends(require_role("analyst")),
+):
     def _ingest():
         try:
             TAXIIClient(server_url=request.server_url, username=request.username,
@@ -304,29 +354,33 @@ def ingest_from_taxii(request: TAXIIIngestRequest, background_tasks: BackgroundT
         except Exception as e:
             logger.error("TAXII ingestion failed: %s", str(e))
     background_tasks.add_task(_ingest)
-    return {"status": "accepted", "message": "TAXII ingestion started.", "server": request.server_url}
+    return {"status": "accepted", "message": "TAXII ingestion started.",
+            "server": request.server_url}
 
 
 @app.post("/ingest/trigger", tags=["Ingestion"])
-def trigger_ingestion_endpoint(background_tasks: BackgroundTasks):
+def trigger_ingestion_endpoint(
+    background_tasks: BackgroundTasks,
+    user:             dict = Depends(require_role("analyst")),
+):
     def _trigger():
         try:
             trigger_ingestion_now()
         except Exception as e:
             logger.error("Trigger ingestion failed: %s", str(e))
     background_tasks.add_task(_trigger)
-    return {"status": "accepted", "message": "Scheduled ingestion job triggered manually."}
+    return {"status": "accepted", "message": "Scheduled ingestion triggered."}
 
 
 @app.get("/ingest/servers", tags=["Ingestion"])
-def list_public_servers():
+def list_public_servers(user: dict = Depends(verify_token)):
     return {"total": len(servers := get_public_servers()), "servers": servers}
 
 
-# ── Scheduler ─────────────────────────────────────────────────────
+# ── Protected: Scheduler (viewer+) ────────────────────────────────
 
 @app.get("/scheduler/status", tags=["Scheduler"])
-def scheduler_status():
+def scheduler_status(user: dict = Depends(verify_token)):
     return get_scheduler_status()
 
 

@@ -11,50 +11,41 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 @pytest.fixture(scope="function")
 def temp_db(monkeypatch, tmp_path):
     """
-    Isolated SQLite database + ML paths for every test.
-
-    Patch order matters:
-      1. Kill the ML singleton FIRST (before any import of app.api.main)
-      2. Redirect DB_PATH so db_manager writes to tmp file
-      3. Redirect ML detector's _get_db_path to the same tmp file
-      4. Redirect ML model dir so no .pkl files touch the real filesystem
-      5. Lower MIN_TRAIN_SAMPLES so API tests can train in-test
-      6. Create all tables (DB + ML)
-
-    When TestClient(app) is later constructed, the lifespan handler calls
-    get_detector() which builds a FRESH AnomalyDetector pointing at tmp paths.
+    Isolated SQLite + ML paths for every test.
+    Kills ML singleton BEFORE TestClient is built so lifespan
+    creates a fresh detector pointing at tmp paths.
     """
     import app.ml.detector as ml_det
 
-    # ── 1. Kill any existing singleton from a previous test ──────
+    # 1. Kill any existing ML singleton immediately
     ml_det._detector_instance = None
 
-    # ── 2. Patch main DB path ────────────────────────────────────
+    # 2. Patch main DB path
     db_file = str(tmp_path / "test.db")
     monkeypatch.setattr("app.database.db_manager.DB_PATH", db_file)
 
-    # ── 3. Patch ML detector's DB accessor ──────────────────────
+    # 3. Patch ML detector DB accessor
     monkeypatch.setattr(ml_det, "_get_db_path", lambda: db_file)
 
-    # ── 4. Patch ML model paths ──────────────────────────────────
+    # 4. Patch ML model paths
     model_dir = str(tmp_path / "models")
     os.makedirs(model_dir, exist_ok=True)
     monkeypatch.setattr(ml_det, "MODEL_DIR",   model_dir)
     monkeypatch.setattr(ml_det, "MODEL_PATH",  os.path.join(model_dir, "if.pkl"))
     monkeypatch.setattr(ml_det, "SCALER_PATH", os.path.join(model_dir, "sc.pkl"))
 
-    # ── 5. Low training threshold for fast tests ─────────────────
+    # 5. Low training threshold for fast tests
     monkeypatch.setattr(ml_det, "MIN_TRAIN_SAMPLES", 5)
     monkeypatch.setattr(ml_det, "RETRAIN_INTERVAL",  1000)
 
-    # ── 6. Create DB + ML tables ─────────────────────────────────
+    # 6. Create all DB tables (main + ML + auth)
     from app.database.db_manager import create_tables
     create_tables()
     ml_det._create_ml_tables()
 
     yield db_file
 
-    # Teardown: nuke singleton so the NEXT test starts clean
+    # Teardown: reset singleton so next test starts clean
     ml_det._detector_instance = None
 
 
@@ -93,12 +84,50 @@ def sample_event():
 
 @pytest.fixture(scope="function")
 def api_client(temp_db):
-    """
-    FastAPI TestClient with isolated DB + ML paths.
-    temp_db fixture runs FIRST, resetting the singleton and patching all
-    paths — so when TestClient(app) triggers the lifespan startup,
-    get_detector() builds a fresh detector pointing at tmp_path.
-    """
+    """FastAPI TestClient with isolated DB + ML paths."""
     from fastapi.testclient import TestClient
     from app.api.main import app
     return TestClient(app)
+
+
+# ── Auth helpers shared across test files ─────────────────────────
+
+@pytest.fixture(scope="function")
+def analyst_token(api_client):
+    """Register + login an analyst user, return access token."""
+    api_client.post("/auth/register", json={
+        "username": "analyst_fixture", "password": "Password123!", "role": "analyst"
+    })
+    r = api_client.post("/auth/login", json={
+        "username": "analyst_fixture", "password": "Password123!"
+    })
+    return r.json()["access_token"]
+
+
+@pytest.fixture(scope="function")
+def viewer_token(api_client):
+    """Register + login a viewer user, return access token."""
+    api_client.post("/auth/register", json={
+        "username": "viewer_fixture", "password": "Password123!", "role": "viewer"
+    })
+    r = api_client.post("/auth/login", json={
+        "username": "viewer_fixture", "password": "Password123!"
+    })
+    return r.json()["access_token"]
+
+
+@pytest.fixture(scope="function")
+def admin_token(api_client):
+    """Register + login an admin user, return access token."""
+    api_client.post("/auth/register", json={
+        "username": "admin_fixture", "password": "Password123!", "role": "admin"
+    })
+    r = api_client.post("/auth/login", json={
+        "username": "admin_fixture", "password": "Password123!"
+    })
+    return r.json()["access_token"]
+
+
+def auth_header(token: str) -> dict:
+    """Build Authorization header dict from token string."""
+    return {"Authorization": f"Bearer {token}"}
