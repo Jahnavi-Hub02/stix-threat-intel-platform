@@ -11,6 +11,21 @@ jobs:
   backend-tests:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U testuser"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -23,10 +38,15 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest psycopg2-binary
 
       - name: Run Tests
-        run: pytest
+        run: pytest tests/ -v
+        env:
+          PYTHONPATH: .
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+          JWT_SECRET_KEY: test-ci-secret-key
+
 
   docker-build:
     runs-on: ubuntu-latest
@@ -38,6 +58,7 @@ jobs:
       - name: Build Docker Image
         run: docker build -t stix-threat-intel .
 
+
   security-scan:
     runs-on: ubuntu-latest
 
@@ -48,5 +69,5 @@ jobs:
       - name: Run Trivy Security Scan
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: 'fs'
-          severity: 'CRITICAL,HIGH'
+          scan-type: "fs"
+          severity: "CRITICAL,HIGH"
