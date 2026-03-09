@@ -4,7 +4,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-DB_PATH = "database/threat_intel.db"
+DB_PATH = "database/threat_intel.db?cache=shared"
 
 
 def _now():
