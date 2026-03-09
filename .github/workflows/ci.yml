@@ -44,7 +44,7 @@ jobs:
         run: pytest tests/ -v
         env:
           PYTHONPATH: .
-          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+          TEST_DB_PATH: /tmp/test_threat_intel.db
           JWT_SECRET_KEY: test-ci-secret-key
 
 
