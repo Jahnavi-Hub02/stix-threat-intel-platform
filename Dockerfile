@@ -36,7 +36,7 @@ COPY run.py .
 COPY app.py .
 
 # Copy built React frontend from Stage 1
-COPY --from=frontend-builder /frontend/build ./frontend/build
+COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
 # Create persistent directories
 # - database/ → SQLite DB (mounted as volume)
@@ -54,4 +54,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

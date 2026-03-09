@@ -59,6 +59,26 @@ from app.ingestion import (
 from app.api.ml import router as ml_router
 from app.auth import auth_router, verify_token, require_role
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Create FastAPI app FIRST
+app = FastAPI(title="STIX Threat Intelligence Platform")
+
+# Then add middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Example route
+@app.get("/")
+def root():
+    return {"message": "STIX Threat Intel API running"}
+
 logger = get_logger(__name__)
 
 

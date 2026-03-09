@@ -363,27 +363,32 @@ class TestAnomalyDetector:
 # ══════════════════════════════════════════════════════════════════
 
 class TestMLAPIEndpoints:
-    """Test /ml/* endpoints via FastAPI TestClient."""
+    """Test /ml/* endpoints via FastAPI TestClient.
+    All endpoints now require JWT — use viewer_token / analyst_token fixtures.
+    """
 
-    def test_ml_status_endpoint(self, api_client):
-        r = api_client.get("/ml/status")
+    def _h(self, token):
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_ml_status_endpoint(self, api_client, viewer_token):
+        r = api_client.get("/ml/status", headers=self._h(viewer_token))
         assert r.status_code == 200
         data = r.json()
         assert "model_trained" in data
         assert "events_collected" in data
 
-    def test_ml_train_insufficient_data(self, api_client):
-        r = api_client.post("/ml/train")
+    def test_ml_train_insufficient_data(self, api_client, analyst_token):
+        r = api_client.post("/ml/train", headers=self._h(analyst_token))
         assert r.status_code == 200
         data = r.json()
         assert data["status"] in ("insufficient_data", "trained", "error")
 
-    def test_ml_train_force(self, api_client):
-        r = api_client.post("/ml/train?force=true")
+    def test_ml_train_force(self, api_client, analyst_token):
+        r = api_client.post("/ml/train?force=true", headers=self._h(analyst_token))
         assert r.status_code == 200
 
-    def test_ml_predict_returns_result(self, api_client):
-        r = api_client.post("/ml/predict", json={
+    def test_ml_predict_returns_result(self, api_client, analyst_token):
+        r = api_client.post("/ml/predict", headers=self._h(analyst_token), json={
             "event_id":         "predict-001",
             "source_ip":        "192.168.1.10",
             "destination_ip":   "8.8.8.8",
@@ -396,21 +401,21 @@ class TestMLAPIEndpoints:
         assert "ml_analysis" in data
         assert "anomaly_score" in data["ml_analysis"]
 
-    def test_ml_predict_score_range(self, api_client):
-        r = api_client.post("/ml/predict", json={
-            "event_id": "predict-range-001",
-            "source_ip": "185.220.101.45",
-            "destination_ip": "91.108.56.100",
-            "source_port": 12345,
+    def test_ml_predict_score_range(self, api_client, analyst_token):
+        r = api_client.post("/ml/predict", headers=self._h(analyst_token), json={
+            "event_id":         "predict-range-001",
+            "source_ip":        "185.220.101.45",
+            "destination_ip":   "91.108.56.100",
+            "source_port":      12345,
             "destination_port": 4444,
-            "protocol": "TCP",
+            "protocol":         "TCP",
         })
         assert r.status_code == 200
         score = r.json()["ml_analysis"]["anomaly_score"]
         assert 0.0 <= score <= 1.0
 
-    def test_event_endpoint_includes_ml_analysis(self, api_client):
-        r = api_client.post("/event", json={
+    def test_event_endpoint_includes_ml_analysis(self, api_client, analyst_token):
+        r = api_client.post("/event", headers=self._h(analyst_token), json={
             "event_id":         "ml-event-001",
             "source_ip":        "1.2.3.4",
             "destination_ip":   "5.6.7.8",
@@ -420,38 +425,39 @@ class TestMLAPIEndpoints:
         })
         assert r.status_code == 200
         data = r.json()
-        assert "ml_analysis" in data, "ml_analysis missing from /event response"
-        assert "ioc_analysis" in data, "ioc_analysis missing from /event response"
+        assert "ml_analysis"     in data, "ml_analysis missing"
+        assert "ioc_analysis"    in data, "ioc_analysis missing"
         assert "final_risk_score" in data, "final_risk_score missing"
-        assert "final_severity" in data, "final_severity missing"
+        assert "final_severity"   in data, "final_severity missing"
 
-    def test_event_status_values(self, api_client):
-        r = api_client.post("/event", json={
-            "event_id": "ml-status-001",
-            "source_ip": "10.0.0.1",
+    def test_event_status_values(self, api_client, analyst_token):
+        r = api_client.post("/event", headers=self._h(analyst_token), json={
+            "event_id":       "ml-status-001",
+            "source_ip":      "10.0.0.1",
             "destination_ip": "10.0.0.2",
         })
         assert r.status_code == 200
-        status = r.json()["status"]
-        assert status in ("benign", "threat_detected", "anomaly_detected", "confirmed_threat")
+        assert r.json()["status"] in (
+            "benign", "threat_detected", "anomaly_detected", "confirmed_threat"
+        )
 
-    def test_event_final_risk_in_range(self, api_client):
-        r = api_client.post("/event", json={
-            "event_id": "risk-range-001",
-            "source_ip": "10.0.0.1",
-            "destination_ip": "8.8.8.8",
+    def test_event_final_risk_in_range(self, api_client, analyst_token):
+        r = api_client.post("/event", headers=self._h(analyst_token), json={
+            "event_id":         "risk-range-001",
+            "source_ip":        "10.0.0.1",
+            "destination_ip":   "8.8.8.8",
             "destination_port": 443,
         })
         assert r.status_code == 200
         score = r.json()["final_risk_score"]
         assert 0.0 <= score <= 100.0
 
-    def test_metrics_includes_ml_stats(self, api_client):
-        r = api_client.get("/metrics")
+    def test_metrics_includes_ml_stats(self, api_client, viewer_token):
+        r = api_client.get("/metrics", headers=self._h(viewer_token))
         assert r.status_code == 200
         stats = r.json()["statistics"]
         assert "ml" in stats, "ML stats missing from /metrics"
         ml = stats["ml"]
         assert "total_ml_events" in ml
         assert "total_anomalies" in ml
-        assert "model_trained" in ml
+        assert "model_trained"   in ml
