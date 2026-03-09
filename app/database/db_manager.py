@@ -4,7 +4,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-DB_PATH = "database/threat_intel.db?cache=shared"
+DB_PATH = "file:database/threat_intel.db?cache=shared"
 
 
 def _now():
@@ -15,11 +15,19 @@ def create_connection():
     """Create a SQLite database connection with dict-like row access."""
     conn = sqlite3.connect(
         DB_PATH,
-        timeout=30,
-        check_same_thread=False
+        uri=True,                # required for ?cache=shared
+        timeout=30,              # wait before throwing lock error
+        check_same_thread=False  # allow multi-thread access
     )
+
     conn.row_factory = sqlite3.Row
+
+    # Improve concurrency for CI tests
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+
     return conn
 
 
