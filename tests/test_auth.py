@@ -389,25 +389,37 @@ class TestAccessControl:
 # Admin: User Management
 # ══════════════════════════════════════════════════════════════════
 
+@pytest.fixture
+def admin_client_and_token(temp_db):
+    """
+    Single fixture that creates the TestClient AND admin user in one
+    sequential flow — no overlapping connections.
+    """
+    from fastapi.testclient import TestClient
+    from app.api.main import app
+    with TestClient(app) as c:
+        _register(c, "adminuser", role="admin")
+        r = _login(c, "adminuser")
+        token = r.json()["access_token"]
+        yield c, token
+
+
 class TestAdminUserManagement:
 
-    def _admin_token(self, client):
-        _register(client, "adminuser", role="admin")
-        return _get_token(client, "adminuser", role="admin")
-
-    def test_admin_can_list_users(self, client):
-        token = self._admin_token(client)
-        r     = client.get("/auth/users", headers=_auth_header(token))
+    def test_admin_can_list_users(self, admin_client_and_token):
+        client, token = admin_client_and_token
+        r = client.get("/auth/users", headers=_auth_header(token))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
         assert any(u["username"] == "adminuser" for u in r.json())
 
-    def test_viewer_cannot_list_users(self, client):
+    def test_viewer_cannot_list_users(self, admin_client_and_token):
+        client, _ = admin_client_and_token
         token = _get_token(client, "viewer99", role="viewer")
         assert client.get("/auth/users", headers=_auth_header(token)).status_code == 403
 
-    def test_admin_can_deactivate_user(self, client):
-        token = self._admin_token(client)
+    def test_admin_can_deactivate_user(self, admin_client_and_token):
+        client, token = admin_client_and_token
         _register(client, "targetuser")
         users  = client.get("/auth/users", headers=_auth_header(token)).json()
         target = next(u for u in users if u["username"] == "targetuser")
@@ -415,13 +427,13 @@ class TestAdminUserManagement:
         assert r.status_code == 200
         assert _login(client, "targetuser").status_code == 401
 
-    def test_admin_cannot_deactivate_self(self, client):
-        token  = self._admin_token(client)
-        users  = client.get("/auth/users", headers=_auth_header(token)).json()
-        admin  = next(u for u in users if u["username"] == "adminuser")
-        r      = client.delete(f"/auth/users/{admin['user_id']}", headers=_auth_header(token))
+    def test_admin_cannot_deactivate_self(self, admin_client_and_token):
+        client, token = admin_client_and_token
+        users = client.get("/auth/users", headers=_auth_header(token)).json()
+        admin = next(u for u in users if u["username"] == "adminuser")
+        r     = client.delete(f"/auth/users/{admin['user_id']}", headers=_auth_header(token))
         assert r.status_code == 400
 
-    def test_deactivate_nonexistent_user(self, client):
-        token = self._admin_token(client)
+    def test_deactivate_nonexistent_user(self, admin_client_and_token):
+        client, token = admin_client_and_token
         assert client.delete("/auth/users/99999", headers=_auth_header(token)).status_code == 404
