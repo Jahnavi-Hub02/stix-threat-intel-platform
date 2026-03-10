@@ -5,8 +5,8 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Use separate database for CI tests
-DB_PATH = os.getenv("TEST_DB_PATH", "database/threat_intel.db")
+# Fixed path — tests use monkeypatch to override this, not env vars
+DB_PATH = "database/threat_intel.db"
 
 
 def _now():
@@ -36,7 +36,6 @@ def create_tables():
     conn = create_connection()
     cursor = conn.cursor()
 
-    # IOC Indicators Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ioc_indicators (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +52,6 @@ def create_tables():
     )
     """)
 
-    # Event Logs Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS event_logs (
         event_id         TEXT PRIMARY KEY,
@@ -68,7 +66,6 @@ def create_tables():
     )
     """)
 
-    # Correlation Results Table — UNIQUE constraint prevents duplicates
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS correlation_results (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +81,6 @@ def create_tables():
     )
     """)
 
-    # Ingestion Audit Log — tracks every TAXII/file ingest run
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ingestion_logs (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,8 +95,6 @@ def create_tables():
     )
     """)
 
-
-    # Users table — stores registered platform users
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,7 +107,6 @@ def create_tables():
     )
     """)
 
-    # Refresh tokens table — allows token revocation on logout
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS refresh_tokens (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,7 +124,6 @@ def create_tables():
     logger.info("Database tables created/verified")
 
 
-
 def insert_indicators(indicators, source_label="Unknown"):
     """Insert IOC indicators with deduplication and ingestion audit logging."""
     conn = create_connection()
@@ -141,7 +133,6 @@ def insert_indicators(indicators, source_label="Unknown"):
     total_duplicates = 0
     now = _now()
 
-    # Log start of ingestion
     cursor.execute("""
         INSERT INTO ingestion_logs (source, status, started_at)
         VALUES (?, 'running', ?)
@@ -156,7 +147,6 @@ def insert_indicators(indicators, source_label="Unknown"):
         exists = cursor.fetchone()
 
         if exists:
-            # Update last_seen on duplicate
             cursor.execute(
                 "UPDATE ioc_indicators SET last_seen = ? WHERE ioc_value = ?",
                 (now, ind["ioc_value"])
@@ -179,7 +169,6 @@ def insert_indicators(indicators, source_label="Unknown"):
             ))
             total_stored += 1
 
-    # Complete ingestion log
     cursor.execute("""
         UPDATE ingestion_logs SET
             status = 'success',
@@ -205,7 +194,7 @@ def save_event(event: dict) -> bool:
     cursor.execute("SELECT event_id FROM event_logs WHERE event_id = ?", (event["event_id"],))
     if cursor.fetchone():
         conn.close()
-        return False  # Already logged
+        return False
 
     cursor.execute("""
         INSERT INTO event_logs
@@ -297,14 +286,13 @@ def get_db_stats():
     """)
     top_threats = [dict(r) for r in cursor.fetchall()]
 
-    # ML anomaly stats (table may not exist yet)
     ml_stats = {"total_ml_events": 0, "total_anomalies": 0, "model_trained": False}
     try:
         cursor.execute("SELECT COUNT(*) FROM ml_events")
         ml_stats["total_ml_events"] = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM ml_events WHERE is_anomaly = 1")
         ml_stats["total_anomalies"] = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM ml_model_runs WHERE status = \'success\'")
+        cursor.execute("SELECT COUNT(*) FROM ml_model_runs WHERE status = 'success'")
         ml_stats["model_trained"] = cursor.fetchone()[0] > 0
     except Exception:
         pass
@@ -325,7 +313,7 @@ def get_db_stats():
 
 def create_user(username: str, password_hash: str, role: str = "viewer") -> dict:
     """Create a new user. Returns the created user dict or raises ValueError on duplicate."""
-    conn   = create_connection()
+    conn = create_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -345,7 +333,7 @@ def create_user(username: str, password_hash: str, role: str = "viewer") -> dict
 
 def get_user_by_username(username: str) -> dict | None:
     """Fetch a user dict by username, or None if not found."""
-    conn   = create_connection()
+    conn = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, username, password_hash, role, is_active, created_at, last_login "
@@ -361,7 +349,7 @@ def get_user_by_username(username: str) -> dict | None:
 
 def get_user_by_id(user_id: int) -> dict | None:
     """Fetch a user dict by ID, or None if not found."""
-    conn   = create_connection()
+    conn = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, username, role, is_active, created_at, last_login "
@@ -386,7 +374,7 @@ def update_last_login(user_id: int) -> None:
 
 def list_users() -> list:
     """Return all users (without password hashes) for admin use."""
-    conn   = create_connection()
+    conn = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, username, role, is_active, created_at, last_login "
@@ -399,8 +387,8 @@ def list_users() -> list:
 
 def deactivate_user(user_id: int) -> bool:
     """Soft-delete a user (sets is_active=0). Returns True if found."""
-    conn    = create_connection()
-    cursor  = conn.cursor()
+    conn = create_connection()
+    cursor = conn.cursor()
     cursor.execute("UPDATE users SET is_active = 0 WHERE id = ?", (user_id,))
     affected = cursor.rowcount
     conn.commit()
@@ -423,7 +411,7 @@ def store_refresh_token(jti: str, user_id: int, expires_at: str) -> None:
 
 def is_refresh_token_valid(jti: str) -> bool:
     """Return True if the JTI exists, is not revoked, and has not expired."""
-    conn   = create_connection()
+    conn = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT revoked, expires_at FROM refresh_tokens WHERE jti = ?",
@@ -435,7 +423,6 @@ def is_refresh_token_valid(jti: str) -> bool:
         return False
     if row["revoked"]:
         return False
-    # Check expiry
     try:
         from datetime import datetime, timezone
         expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))

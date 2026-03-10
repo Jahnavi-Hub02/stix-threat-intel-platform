@@ -12,15 +12,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def temp_db(monkeypatch, tmp_path):
     """
     Isolated SQLite + ML paths for every test.
-    Kills ML singleton BEFORE TestClient is built so lifespan
-    creates a fresh detector pointing at tmp paths.
+    Each test function gets its own fresh database in a unique tmp_path directory.
     """
     import app.ml.detector as ml_det
 
     # 1. Kill any existing ML singleton immediately
     ml_det._detector_instance = None
 
-    # 2. Patch main DB path
+    # 2. Patch main DB path — tmp_path is unique per test, no sharing
     db_file = str(tmp_path / "test.db")
     monkeypatch.setattr("app.database.db_manager.DB_PATH", db_file)
 
@@ -84,10 +83,15 @@ def sample_event():
 
 @pytest.fixture(scope="function")
 def api_client(temp_db):
-    """FastAPI TestClient with isolated DB + ML paths."""
+    """
+    FastAPI TestClient with isolated DB + ML paths.
+    Uses 'with' statement so the lifespan (startup/shutdown) runs cleanly
+    around each test — connections are fully closed before the next test starts.
+    """
     from fastapi.testclient import TestClient
     from app.api.main import app
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 # ── Auth helpers shared across test files ─────────────────────────

@@ -2,15 +2,6 @@
 tests/test_auth.py
 ==================
 Full test suite for JWT authentication.
-
-Coverage:
-  - Password hashing & verification (PBKDF2-SHA256)
-  - JWT token creation, expiry, invalid tokens
-  - Role hierarchy enforcement
-  - /auth/register, /auth/login, /auth/refresh, /auth/logout
-  - /auth/me, /auth/users (admin), /auth/users/{id} (admin)
-  - All protected API endpoints return 401 without token
-  - Role-based access (viewer blocked from analyst endpoints)
 """
 
 import pytest
@@ -23,9 +14,14 @@ import time
 
 @pytest.fixture
 def client(temp_db):
+    """
+    Uses 'with' so lifespan startup/shutdown brackets each test.
+    Ensures all SQLite connections are flushed before the next test.
+    """
     from fastapi.testclient import TestClient
     from app.api.main import app
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def _register(client, username, password="Password123!", role="viewer"):
@@ -83,7 +79,6 @@ class TestPasswordHashing:
         assert verify_password("incorrect", h) is False
 
     def test_two_hashes_of_same_password_differ(self):
-        """Each hash uses a random salt — same password produces different hashes."""
         from app.auth.security import hash_password
         h1 = hash_password("same")
         h2 = hash_password("same")
@@ -126,7 +121,6 @@ class TestJWTTokens:
         import jwt as pyjwt
         from app.auth.security import SECRET_KEY, ALGORITHM, decode_token
         from fastapi import HTTPException
-        # Manually create an already-expired token
         payload = {"sub": "alice", "user_id": 1, "role": "viewer",
                    "type": "access", "exp": 1, "iat": 1}
         token = pyjwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -152,17 +146,15 @@ class TestJWTTokens:
     def test_refresh_token_has_jti(self):
         from app.auth.security import create_refresh_token
         _, jti = create_refresh_token(1, "alice")
-        assert len(jti) == 32  # 16 bytes hex = 32 chars
+        assert len(jti) == 32
 
     def test_verify_token_dep_requires_access_type(self, client):
-        """verify_token() should reject a refresh token used as access token."""
         from app.auth.security import create_refresh_token
         refresh_token, _ = create_refresh_token(1, "alice")
         r = client.get("/metrics", headers=_auth_header(refresh_token))
         assert r.status_code == 401
 
     def test_require_role_hierarchy(self):
-        """viewer < analyst < admin."""
         from app.auth.security import ROLE_HIERARCHY
         assert ROLE_HIERARCHY.index("viewer")  < ROLE_HIERARCHY.index("analyst")
         assert ROLE_HIERARCHY.index("analyst") < ROLE_HIERARCHY.index("admin")
@@ -180,9 +172,9 @@ class TestRegister:
         data = r.json()
         assert data["username"] == "newuser"
         assert data["role"]     == "viewer"
-        assert "user_id"   in data
-        assert "password"  not in data
-        assert "password_hash" not in data
+        assert "user_id"        in data
+        assert "password"       not in data
+        assert "password_hash"  not in data
 
     def test_register_returns_role(self, client):
         r = _register(client, "analystuser", role="analyst")
@@ -218,7 +210,7 @@ class TestRegister:
     def test_register_username_case_insensitive(self, client):
         _register(client, "CaseUser")
         r = _register(client, "caseuser")
-        assert r.status_code == 409  # stored as lowercase, same conflict
+        assert r.status_code == 409
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -250,7 +242,7 @@ class TestLogin:
 
     def test_login_case_insensitive_username(self, client):
         _register(client, "CaseSensitive")
-        r = _login(client, "casesensitive")  # lowercase
+        r = _login(client, "casesensitive")
         assert r.status_code == 200
 
     def test_login_returns_valid_jwt(self, client):
@@ -275,7 +267,7 @@ class TestRefreshLogout:
         r = client.post("/auth/refresh", json={"refresh_token": refresh_token})
         assert r.status_code == 200
         data = r.json()
-        assert "access_token" in data
+        assert "access_token"    in data
         assert data["token_type"] == "bearer"
 
     def test_refresh_with_access_token_fails(self, client):
@@ -287,14 +279,11 @@ class TestRefreshLogout:
         _register(client, "logoutuser")
         login_data    = _login(client, "logoutuser").json()
         refresh_token = login_data["refresh_token"]
-        # Logout
         client.post("/auth/logout", json={"refresh_token": refresh_token})
-        # Refresh should now fail
         r = client.post("/auth/refresh", json={"refresh_token": refresh_token})
         assert r.status_code == 401
 
     def test_logout_returns_200_even_for_expired_token(self, client):
-        """Logout should never crash — even for garbage tokens."""
         r = client.post("/auth/logout", json={"refresh_token": "garbage.token.here"})
         assert r.status_code == 200
 
@@ -327,16 +316,13 @@ class TestMe:
 class TestAccessControl:
 
     def test_metrics_requires_token(self, client):
-        r = client.get("/metrics")
-        assert r.status_code == 401
+        assert client.get("/metrics").status_code == 401
 
     def test_iocs_requires_token(self, client):
-        r = client.get("/iocs")
-        assert r.status_code == 401
+        assert client.get("/iocs").status_code == 401
 
     def test_correlations_requires_token(self, client):
-        r = client.get("/correlations")
-        assert r.status_code == 401
+        assert client.get("/correlations").status_code == 401
 
     def test_event_requires_token(self, client):
         r = client.post("/event", json={
@@ -345,21 +331,17 @@ class TestAccessControl:
         assert r.status_code == 401
 
     def test_ml_status_requires_token(self, client):
-        r = client.get("/ml/status")
-        assert r.status_code == 401
+        assert client.get("/ml/status").status_code == 401
 
     def test_viewer_can_read_iocs(self, client):
         token = _get_token(client, "viewer1", role="viewer")
-        r     = client.get("/iocs", headers=_auth_header(token))
-        assert r.status_code == 200
+        assert client.get("/iocs", headers=_auth_header(token)).status_code == 200
 
     def test_viewer_can_read_metrics(self, client):
         token = _get_token(client, "viewer2", role="viewer")
-        r     = client.get("/metrics", headers=_auth_header(token))
-        assert r.status_code == 200
+        assert client.get("/metrics", headers=_auth_header(token)).status_code == 200
 
     def test_viewer_blocked_from_submit_event(self, client):
-        """Viewers cannot submit events — analyst+ only."""
         token = _get_token(client, "viewer3", role="viewer")
         r     = client.post("/event", headers=_auth_header(token), json={
             "event_id": "evt-block", "source_ip": "1.2.3.4", "destination_ip": "5.6.7.8"
@@ -369,8 +351,7 @@ class TestAccessControl:
 
     def test_viewer_blocked_from_ml_train(self, client):
         token = _get_token(client, "viewer4", role="viewer")
-        r     = client.post("/ml/train", headers=_auth_header(token))
-        assert r.status_code == 403
+        assert client.post("/ml/train", headers=_auth_header(token)).status_code == 403
 
     def test_analyst_can_submit_event(self, client):
         token = _get_token(client, "analyst1", role="analyst")
@@ -385,8 +366,7 @@ class TestAccessControl:
 
     def test_analyst_can_train_ml(self, client):
         token = _get_token(client, "analyst2", role="analyst")
-        r     = client.post("/ml/train", headers=_auth_header(token))
-        assert r.status_code == 200
+        assert client.post("/ml/train", headers=_auth_header(token)).status_code == 200
 
     def test_admin_can_do_everything_analyst_can(self, client):
         token = _get_token(client, "admin1", role="admin")
@@ -398,8 +378,7 @@ class TestAccessControl:
         assert r.status_code == 200
 
     def test_health_is_public(self, client):
-        """/ and /health must never require a token."""
-        assert client.get("/").status_code      == 200
+        assert client.get("/").status_code       == 200
         assert client.get("/health").status_code == 200
 
     def test_docs_is_public(self, client):
@@ -420,35 +399,29 @@ class TestAdminUserManagement:
         token = self._admin_token(client)
         r     = client.get("/auth/users", headers=_auth_header(token))
         assert r.status_code == 200
-        users = r.json()
-        assert isinstance(users, list)
-        assert any(u["username"] == "adminuser" for u in users)
+        assert isinstance(r.json(), list)
+        assert any(u["username"] == "adminuser" for u in r.json())
 
     def test_viewer_cannot_list_users(self, client):
         token = _get_token(client, "viewer99", role="viewer")
-        r     = client.get("/auth/users", headers=_auth_header(token))
-        assert r.status_code == 403
+        assert client.get("/auth/users", headers=_auth_header(token)).status_code == 403
 
     def test_admin_can_deactivate_user(self, client):
         token = self._admin_token(client)
-        # Create a target user
         _register(client, "targetuser")
-        users    = client.get("/auth/users", headers=_auth_header(token)).json()
-        target   = next(u for u in users if u["username"] == "targetuser")
-        r        = client.delete(f"/auth/users/{target['user_id']}", headers=_auth_header(token))
+        users  = client.get("/auth/users", headers=_auth_header(token)).json()
+        target = next(u for u in users if u["username"] == "targetuser")
+        r      = client.delete(f"/auth/users/{target['user_id']}", headers=_auth_header(token))
         assert r.status_code == 200
-        # Target user should now be unable to login
-        login_r  = _login(client, "targetuser")
-        assert login_r.status_code == 401
+        assert _login(client, "targetuser").status_code == 401
 
     def test_admin_cannot_deactivate_self(self, client):
-        token    = self._admin_token(client)
-        users    = client.get("/auth/users", headers=_auth_header(token)).json()
-        admin    = next(u for u in users if u["username"] == "adminuser")
-        r        = client.delete(f"/auth/users/{admin['user_id']}", headers=_auth_header(token))
+        token  = self._admin_token(client)
+        users  = client.get("/auth/users", headers=_auth_header(token)).json()
+        admin  = next(u for u in users if u["username"] == "adminuser")
+        r      = client.delete(f"/auth/users/{admin['user_id']}", headers=_auth_header(token))
         assert r.status_code == 400
 
     def test_deactivate_nonexistent_user(self, client):
         token = self._admin_token(client)
-        r     = client.delete("/auth/users/99999", headers=_auth_header(token))
-        assert r.status_code == 404
+        assert client.delete("/auth/users/99999", headers=_auth_header(token)).status_code == 404
