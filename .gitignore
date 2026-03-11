@@ -1,0 +1,28 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+
+# Environment
+.env
+
+# Database
+*.db
+database/
+
+# Reports
+Threat_Report_*.pdf
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

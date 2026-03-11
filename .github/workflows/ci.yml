@@ -1,0 +1,61 @@
+name: STIX Threat Intel CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    # No postgres service — this project uses SQLite, not PostgreSQL
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create Required Directories
+        run: mkdir -p database models data
+
+      - name: Run Tests
+        run: pytest tests/ -v --tb=short
+        env:
+          PYTHONPATH: .
+          JWT_SECRET_KEY: test-ci-secret-key-not-used-in-production
+          # No TEST_DB_PATH — conftest.py handles isolation via monkeypatch
+
+
+  docker-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build -t stix-threat-intel .
+
+
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          severity: "CRITICAL,HIGH"
