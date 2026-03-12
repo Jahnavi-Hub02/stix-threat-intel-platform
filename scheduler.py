@@ -60,9 +60,9 @@ class TAXIIScheduler:
 
             next_run = self.ingest_job_id.next_run_time
             logger.info(
-                "Scheduler started",
-                interval_minutes=interval_minutes,
-                next_run=next_run,
+                "Scheduler started — interval=%s min, next_run=%s",
+                interval_minutes,
+                next_run,
             )
 
             return {
@@ -71,7 +71,7 @@ class TAXIIScheduler:
             }
 
         except Exception as e:
-            logger.error("Failed to start scheduler", error=str(e))
+            logger.error("Failed to start scheduler: %s", str(e))
             raise
 
     def stop(self):
@@ -81,17 +81,17 @@ class TAXIIScheduler:
             self.is_running = False
             logger.info("Scheduler stopped")
         except Exception as e:
-            logger.error("Failed to stop scheduler", error=str(e))
+            logger.error("Failed to stop scheduler: %s", str(e))
 
     def trigger_now(self):
         """Manually trigger ingestion immediately."""
         try:
             logger.info("Triggering ingestion manually")
             result = self._run_taxii_ingestion()
-            logger.info("Manual ingestion triggered", result=result)
+            logger.info("Manual ingestion triggered: %s", str(result))
             return result
         except Exception as e:
-            logger.error("Failed to trigger ingestion", error=str(e))
+            logger.error("Failed to trigger ingestion: %s", str(e))
             raise
 
     def _run_taxii_ingestion(self):
@@ -109,7 +109,7 @@ class TAXIIScheduler:
             # Ingest from each public server
             for server_key, server_config in PUBLIC_SERVERS.items():
                 try:
-                    logger.info("Ingesting from server", server=server_key)
+                    logger.info("Ingesting from server: %s", server_key)
 
                     client = TAXIIClient(
                         server_url=server_config["url"],
@@ -134,13 +134,17 @@ class TAXIIScheduler:
                     }
 
                     logger.info(
-                        "Server ingestion complete",
-                        server=server_key,
-                        stored=result.get("total_stored"),
+                        "Server ingestion complete — server=%s stored=%s",
+                        server_key,
+                        result.get("total_stored"),
                     )
 
                 except Exception as e:
-                    logger.error("Server ingestion failed", server=server_key, error=str(e))
+                    logger.error(
+                        "Server ingestion failed — server=%s error=%s",
+                        server_key,
+                        str(e),
+                    )
                     server_result = {
                         "name": server_key,
                         "status": "failed",
@@ -160,7 +164,7 @@ class TAXIIScheduler:
             run_info["total_duplicates"] = total_duplicates
 
         except Exception as e:
-            logger.error("TAXII ingestion error", error=str(e))
+            logger.error("TAXII ingestion error: %s", str(e))
             self._log_ingestion_to_db(0, 0, 0, "failed", str(e))
             run_info["status"] = "failed"
             run_info["error"] = str(e)
@@ -168,7 +172,7 @@ class TAXIIScheduler:
         # Add to history
         self.run_history.append(run_info)
 
-        logger.info("Ingestion run complete", status=run_info.get("status"))
+        logger.info("Ingestion run complete — status=%s", run_info.get("status"))
         return run_info
 
     def _log_ingestion_to_db(
@@ -206,7 +210,7 @@ class TAXIIScheduler:
             conn.close()
 
         except Exception as e:
-            logger.error("Failed to log ingestion to DB", error=str(e))
+            logger.error("Failed to log ingestion to DB: %s", str(e))
 
     def get_status(self):
         """Get current scheduler status and run history."""

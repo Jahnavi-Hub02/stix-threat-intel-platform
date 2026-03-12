@@ -5,14 +5,26 @@ Run locally:
     uvicorn app:app --reload --port 8000
 
 Frontend (separate terminal):
-    cd frontend && npm run dev   -> http://localhost:5173
-
-This file simply re-exports the 'app' object from app.api.main.
-All middleware (CORS), routers, and lifespan hooks are registered
-there — do NOT add middleware here to avoid double-registration.
+    cd frontend && npm run dev   -> http://localhost:3000
 """
 
-from app.api.main import app  # noqa: F401  — re-export for uvicorn
+import os
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.main import app
+
+# CORS — allows React frontend to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://*.onrender.com",
+        os.getenv("FRONTEND_URL", ""),
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,28 +1,65 @@
-# Python
-venv/
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.coverage
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
 
-# Environment
+# ── Virtual Environments ──────────────────────────────────────────
+venv/
+env/
+.venv/
+ENV/
+
+# ── Environment & Secrets ─────────────────────────────────────────
 .env
+.env.*
+!.env.example
+*.key
+secrets/
 
-# Database
-*.db
+# ── Runtime Data (never commit) ───────────────────────────────────
 database/
+models/
+*.db
+*.sqlite3
 
-# Reports
+# ── Generated Reports (runtime output) ────────────────────────────
 Threat_Report_*.pdf
+reports/
 
-# Node
-node_modules/
+# ── Test Artifacts ────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.prof
 
-# IDE
-.vscode/
+# ── ML Model Files ────────────────────────────────────────────────
+*.pkl
+*.joblib
+
+# ── IDE & OS ──────────────────────────────────────────────────────
 .idea/
-
-# OS
+.vscode/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
+
+# ── Node / Frontend ───────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.env
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+
+# ── Docker ────────────────────────────────────────────────────────
+docker-compose.override.yml

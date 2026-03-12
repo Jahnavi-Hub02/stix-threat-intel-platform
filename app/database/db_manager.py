@@ -20,20 +20,17 @@ def create_connection():
         timeout=30,
         check_same_thread=False
     )
-
     conn.row_factory = sqlite3.Row
-
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute("PRAGMA busy_timeout=30000;")
-
     return conn
 
 
 def create_tables():
     """Create all required database tables if they don't exist."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -119,19 +116,129 @@ def create_tables():
     )
     """)
 
+    # ── Alert Triage Table ────────────────────────────────────────
+    # alert_type  : "threat_detected" | "anomaly_detected" | "confirmed_threat"
+    # assigned_to : username of analyst who last updated the alert
+    # resolved_at : timestamp when status changed to RESOLVED or FALSE_POSITIVE
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS alerts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id       TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'NEW',
+        alert_type     TEXT NOT NULL DEFAULT 'threat_detected',
+        risk_score     REAL DEFAULT 0.0,
+        severity       TEXT DEFAULT 'Low',
+        ioc_matches    INTEGER DEFAULT 0,
+        source_ip      TEXT,
+        destination_ip TEXT,
+        notes          TEXT,
+        assigned_to    TEXT,
+        resolved_at    TEXT,
+        created_at     TEXT,
+        updated_at     TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database tables created/verified")
 
 
+# ── Alert CRUD ────────────────────────────────────────────────────
+
+def create_alert(event_id: str, alert_type: str, risk_score: float,
+                 severity: str, ioc_matches: int,
+                 source_ip: str = None, destination_ip: str = None) -> dict:
+    """Insert a new alert row. Returns the created alert as a dict."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    now    = _now()
+    cursor.execute("""
+        INSERT INTO alerts
+          (event_id, status, alert_type, risk_score, severity,
+           ioc_matches, source_ip, destination_ip, created_at, updated_at)
+        VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (event_id, alert_type, risk_score, severity, ioc_matches,
+          source_ip, destination_ip, now, now))
+    conn.commit()
+    alert_id = cursor.lastrowid
+    conn.close()
+    return get_alert_by_id(alert_id)
+
+
+def get_alert_by_id(alert_id: int) -> dict | None:
+    """Fetch a single alert by ID, or None if not found."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_alerts(status_filter: str | None = None,
+                   limit: int = 100, offset: int = 0) -> list:
+    """Fetch alerts, optionally filtered by status."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    if status_filter:
+        cursor.execute(
+            "SELECT * FROM alerts WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (status_filter, limit, offset)
+        )
+    else:
+        cursor.execute(
+            "SELECT * FROM alerts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_alert_summary() -> dict:
+    """Return counts grouped by status, e.g. {"NEW": 3, "RESOLVED": 1}."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, COUNT(*) as count FROM alerts GROUP BY status")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row["status"]: row["count"] for row in rows}
+
+
+def update_alert(alert_id: int, new_status: str,
+                 notes: str | None = None,
+                 assigned_to: str | None = None,
+                 resolved_at: str | None = None) -> dict | None:
+    """Update alert. Returns updated alert dict or None if not found."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    now    = _now()
+    cursor.execute("""
+        UPDATE alerts
+        SET status      = ?,
+            notes       = COALESCE(?, notes),
+            assigned_to = COALESCE(?, assigned_to),
+            resolved_at = COALESCE(?, resolved_at),
+            updated_at  = ?
+        WHERE id = ?
+    """, (new_status, notes, assigned_to, resolved_at, now, alert_id))
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    if not affected:
+        return None
+    return get_alert_by_id(alert_id)
+
+
+# ── IOC Indicators ────────────────────────────────────────────────
+
 def insert_indicators(indicators, source_label="Unknown"):
     """Insert IOC indicators with deduplication and ingestion audit logging."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
-
-    total_stored = 0
-    total_duplicates = 0
-    now = _now()
+    total_stored, total_duplicates = 0, 0
+    now    = _now()
 
     cursor.execute("""
         INSERT INTO ingestion_logs (source, status, started_at)
@@ -144,9 +251,7 @@ def insert_indicators(indicators, source_label="Unknown"):
             "SELECT id FROM ioc_indicators WHERE ioc_value = ?",
             (ind["ioc_value"],)
         )
-        exists = cursor.fetchone()
-
-        if exists:
+        if cursor.fetchone():
             cursor.execute(
                 "UPDATE ioc_indicators SET last_seen = ? WHERE ioc_value = ?",
                 (now, ind["ioc_value"])
@@ -164,8 +269,7 @@ def insert_indicators(indicators, source_label="Unknown"):
                 ind["ioc_value"],
                 ind.get("confidence", 50),
                 ind.get("source", source_label),
-                now,
-                now
+                now, now
             ))
             total_stored += 1
 
@@ -181,21 +285,18 @@ def insert_indicators(indicators, source_label="Unknown"):
 
     conn.commit()
     conn.close()
-
     logger.info("Ingestion complete", stored=total_stored, duplicates=total_duplicates)
     return {"stored": total_stored, "duplicates": total_duplicates}
 
 
 def save_event(event: dict) -> bool:
     """Save an incoming event to event_logs. Returns False if already exists."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
-
     cursor.execute("SELECT event_id FROM event_logs WHERE event_id = ?", (event["event_id"],))
     if cursor.fetchone():
         conn.close()
         return False
-
     cursor.execute("""
         INSERT INTO event_logs
         (event_id, source_ip, destination_ip, source_port, destination_port, protocol, timestamp)
@@ -209,17 +310,14 @@ def save_event(event: dict) -> bool:
         event.get("protocol"),
         event.get("timestamp", _now())
     ))
-
     conn.commit()
     conn.close()
     return True
 
 
 def get_all_iocs(limit=100, offset=0, ioc_type=None):
-    """Fetch IOC indicators as list of dicts."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
-
     if ioc_type:
         cursor.execute(
             "SELECT * FROM ioc_indicators WHERE ioc_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -230,17 +328,14 @@ def get_all_iocs(limit=100, offset=0, ioc_type=None):
             "SELECT * FROM ioc_indicators ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (limit, offset)
         )
-
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
 
 
 def get_correlation_results(event_id=None, limit=50):
-    """Fetch correlation results as list of dicts."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
-
     if event_id:
         cursor.execute(
             "SELECT * FROM correlation_results WHERE event_id = ? ORDER BY detected_at DESC",
@@ -251,38 +346,29 @@ def get_correlation_results(event_id=None, limit=50):
             "SELECT * FROM correlation_results ORDER BY detected_at DESC LIMIT ?",
             (limit,)
         )
-
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
 
 
 def get_db_stats():
-    """Return platform-wide statistics."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM ioc_indicators WHERE is_active = 1")
     total_iocs = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM event_logs")
     total_events = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM correlation_results")
     total_correlations = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'Critical'")
     critical = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'High'")
     high = cursor.fetchone()[0]
-
     cursor.execute("""
         SELECT matched_ip, COUNT(*) as hit_count
         FROM correlation_results
-        GROUP BY matched_ip
-        ORDER BY hit_count DESC
-        LIMIT 5
+        GROUP BY matched_ip ORDER BY hit_count DESC LIMIT 5
     """)
     top_threats = [dict(r) for r in cursor.fetchall()]
 
@@ -298,7 +384,6 @@ def get_db_stats():
         pass
 
     conn.close()
-
     return {
         "total_iocs": total_iocs,
         "total_events": total_events,
@@ -312,8 +397,7 @@ def get_db_stats():
 # ── User Management ───────────────────────────────────────────────
 
 def create_user(username: str, password_hash: str, role: str = "viewer") -> dict:
-    """Create a new user. Returns the created user dict or raises ValueError on duplicate."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -321,8 +405,7 @@ def create_user(username: str, password_hash: str, role: str = "viewer") -> dict
             (username.lower(), password_hash, role)
         )
         conn.commit()
-        user_id = cursor.lastrowid
-        return {"user_id": user_id, "username": username.lower(), "role": role}
+        return {"user_id": cursor.lastrowid, "username": username.lower(), "role": role}
     except Exception as e:
         if "UNIQUE constraint" in str(e):
             raise ValueError(f"Username '{username}' is already taken.")
@@ -332,8 +415,7 @@ def create_user(username: str, password_hash: str, role: str = "viewer") -> dict
 
 
 def get_user_by_username(username: str) -> dict | None:
-    """Fetch a user dict by username, or None if not found."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, username, password_hash, role, is_active, created_at, last_login "
@@ -342,14 +424,11 @@ def get_user_by_username(username: str) -> dict | None:
     )
     row = cursor.fetchone()
     conn.close()
-    if not row:
-        return None
-    return dict(row)
+    return dict(row) if row else None
 
 
 def get_user_by_id(user_id: int) -> dict | None:
-    """Fetch a user dict by ID, or None if not found."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, username, role, is_active, created_at, last_login "
@@ -362,19 +441,14 @@ def get_user_by_id(user_id: int) -> dict | None:
 
 
 def update_last_login(user_id: int) -> None:
-    """Stamp last_login timestamp on successful login."""
     conn = create_connection()
-    conn.execute(
-        "UPDATE users SET last_login = ? WHERE id = ?",
-        (_now(), user_id)
-    )
+    conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (_now(), user_id))
     conn.commit()
     conn.close()
 
 
 def list_users() -> list:
-    """Return all users (without password hashes) for admin use."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, username, role, is_active, created_at, last_login "
@@ -386,8 +460,7 @@ def list_users() -> list:
 
 
 def deactivate_user(user_id: int) -> bool:
-    """Soft-delete a user (sets is_active=0). Returns True if found."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET is_active = 0 WHERE id = ?", (user_id,))
     affected = cursor.rowcount
@@ -399,7 +472,6 @@ def deactivate_user(user_id: int) -> bool:
 # ── Refresh Token Management ──────────────────────────────────────
 
 def store_refresh_token(jti: str, user_id: int, expires_at: str) -> None:
-    """Persist a refresh token JTI so we can revoke it on logout."""
     conn = create_connection()
     conn.execute(
         "INSERT INTO refresh_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
@@ -410,8 +482,7 @@ def store_refresh_token(jti: str, user_id: int, expires_at: str) -> None:
 
 
 def is_refresh_token_valid(jti: str) -> bool:
-    """Return True if the JTI exists, is not revoked, and has not expired."""
-    conn = create_connection()
+    conn   = create_connection()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT revoked, expires_at FROM refresh_tokens WHERE jti = ?",
@@ -419,12 +490,9 @@ def is_refresh_token_valid(jti: str) -> bool:
     )
     row = cursor.fetchone()
     conn.close()
-    if not row:
-        return False
-    if row["revoked"]:
+    if not row or row["revoked"]:
         return False
     try:
-        from datetime import datetime, timezone
         expires = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expires:
             return False
@@ -434,7 +502,6 @@ def is_refresh_token_valid(jti: str) -> bool:
 
 
 def revoke_refresh_token(jti: str) -> None:
-    """Mark a refresh token as revoked (logout)."""
     conn = create_connection()
     conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE jti = ?", (jti,))
     conn.commit()
@@ -442,11 +509,7 @@ def revoke_refresh_token(jti: str) -> None:
 
 
 def revoke_all_user_tokens(user_id: int) -> None:
-    """Revoke all refresh tokens for a user (force logout everywhere)."""
     conn = create_connection()
-    conn.execute(
-        "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
-        (user_id,)
-    )
+    conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()

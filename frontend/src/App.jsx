@@ -525,256 +525,6 @@ function EventForm({ onResult }) {
   );
 }
 
-
-// ══════════════════════════════════════════════════════════════════
-// ALERTS TRIAGE PANEL
-// ══════════════════════════════════════════════════════════════════
-
-const STATUS_COLORS = {
-  NEW:            { bg: "rgba(255,60,110,0.12)",  border: "#ff3c6e", text: "#ff3c6e" },
-  INVESTIGATING:  { bg: "rgba(255,212,0,0.10)",   border: "#ffd700", text: "#ffd700" },
-  RESOLVED:       { bg: "rgba(0,255,159,0.10)",   border: "#00ff9f", text: "#00ff9f" },
-  FALSE_POSITIVE: { bg: "rgba(74,85,104,0.20)",   border: "#4a5568", text: "#4a5568" },
-};
-
-const STATUS_FLOW = {
-  NEW:            ["INVESTIGATING", "FALSE_POSITIVE"],
-  INVESTIGATING:  ["RESOLVED", "FALSE_POSITIVE"],
-  RESOLVED:       [],
-  FALSE_POSITIVE: [],
-};
-
-function AlertCard({ alert, onUpdateStatus, loading, canEdit }) {
-  const [showNotes, setShowNotes] = useState(false);
-  const [notes, setNotes]         = useState(alert.notes || "");
-  const sc = STATUS_COLORS[alert.status] || STATUS_COLORS.NEW;
-  const nextStatuses = STATUS_FLOW[alert.status] || [];
-
-  return (
-    <div style={{
-      background: "var(--panel)", border: `1px solid ${sc.border}44`,
-      borderLeft: `3px solid ${sc.border}`, borderRadius: 4,
-      padding: "14px 16px", animation: "slide-in 0.3s ease",
-      marginBottom: 10,
-    }}>
-      {/* Header row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          {/* Status badge */}
-          <span style={{
-            fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 10px",
-            background: sc.bg, color: sc.text, border: `1px solid ${sc.border}`,
-            borderRadius: 2, letterSpacing: 1,
-          }}>{alert.status}</span>
-          {/* Type badge */}
-          <span style={{
-            fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 8px",
-            background: alert.alert_type === "IOC_MATCH" ? "rgba(0,212,255,0.1)" : "rgba(255,140,66,0.1)",
-            color: alert.alert_type === "IOC_MATCH" ? "var(--accent)" : "var(--high)",
-            border: `1px solid ${alert.alert_type === "IOC_MATCH" ? "var(--accent)" : "var(--high)"}44`,
-            borderRadius: 2,
-          }}>{alert.alert_type}</span>
-          {/* Severity */}
-          <span style={{
-            fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 8px",
-            color: `var(${sev(alert.severity)})`,
-            background: `var(${sev(alert.severity)})18`,
-            border: `1px solid var(${sev(alert.severity)})44`, borderRadius: 2,
-          }}>{alert.severity}</span>
-        </div>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>
-          #{alert.id} · {alert.created_at ? new Date(alert.created_at).toLocaleString() : "—"}
-        </div>
-      </div>
-
-      {/* Details grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 12 }}>
-        {[
-          ["Event ID",     alert.event_id],
-          ["Source IP",    alert.source_ip    || "—"],
-          ["Dest IP",      alert.destination_ip || "—"],
-          ["Risk Score",   alert.risk_score != null ? `${alert.risk_score.toFixed(1)}/100` : "—"],
-          ["MITRE Tactic", alert.mitre_tactic  || "—"],
-          ["Decision",     alert.decision      || "—"],
-          ["Assigned To",  alert.assigned_to   || "Unassigned"],
-        ].map(([k, v]) => (
-          <div key={k} style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-            <div style={{ color: "var(--muted)", fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>{k}</div>
-            <div style={{ color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Notes */}
-      {alert.notes && (
-        <div style={{
-          fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)",
-          background: "var(--surface)", padding: "8px 12px", borderRadius: 3,
-          border: "1px solid var(--border)", marginBottom: 10,
-        }}>
-          📝 {alert.notes}
-        </div>
-      )}
-
-      {/* Action buttons — only for analysts+ on actionable statuses */}
-      {canEdit && nextStatuses.length > 0 && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          {nextStatuses.map(ns => (
-            <button
-              key={ns}
-              disabled={loading === alert.id}
-              onClick={() => {
-                if (ns === "INVESTIGATING" || ns === "FALSE_POSITIVE") {
-                  onUpdateStatus(alert.id, ns, notes || null);
-                } else {
-                  setShowNotes(true);
-                }
-              }}
-              style={{
-                background: STATUS_COLORS[ns]?.bg || "transparent",
-                border: `1px solid ${STATUS_COLORS[ns]?.border || "#4a5568"}`,
-                color: STATUS_COLORS[ns]?.text || "var(--muted)",
-                fontFamily: "var(--font-mono)", fontSize: 10, padding: "5px 14px",
-                cursor: loading === alert.id ? "wait" : "pointer", borderRadius: 2,
-                letterSpacing: 1, transition: "all 0.2s",
-              }}
-            >
-              {loading === alert.id ? "..." : `→ ${ns.replace("_", " ")}`}
-            </button>
-          ))}
-
-          {/* Inline notes for RESOLVED */}
-          {showNotes && (
-            <div style={{ display: "flex", gap: 8, flex: 1, minWidth: 200 }}>
-              <input
-                placeholder="Add analyst notes (optional)..."
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-                style={{
-                  flex: 1, background: "var(--surface)", border: "1px solid var(--border)",
-                  color: "var(--text)", padding: "5px 10px", borderRadius: 2,
-                  fontFamily: "var(--font-mono)", fontSize: 11, outline: "none",
-                }}
-              />
-              <button
-                onClick={() => { onUpdateStatus(alert.id, "RESOLVED", notes || null); setShowNotes(false); }}
-                style={{
-                  background: STATUS_COLORS.RESOLVED.bg, border: `1px solid ${STATUS_COLORS.RESOLVED.border}`,
-                  color: STATUS_COLORS.RESOLVED.text, fontFamily: "var(--font-mono)", fontSize: 10,
-                  padding: "5px 14px", cursor: "pointer", borderRadius: 2,
-                }}
-              >✓ CONFIRM RESOLVED</button>
-              <button onClick={() => setShowNotes(false)} style={{
-                background: "none", border: "1px solid var(--border)", color: "var(--muted)",
-                fontFamily: "var(--font-mono)", fontSize: 10, padding: "5px 10px",
-                cursor: "pointer", borderRadius: 2,
-              }}>✕</button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Closed status */}
-      {["RESOLVED", "FALSE_POSITIVE"].includes(alert.status) && alert.resolved_at && (
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 6 }}>
-          Closed: {new Date(alert.resolved_at).toLocaleString()} by {alert.assigned_to || "unknown"}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AlertsTriage({ alerts, alertFilter, setAlertFilter, triageLoading, userRole, onUpdateStatus }) {
-  const canEdit = userRole === "analyst" || userRole === "admin";
-
-  const statusCounts = alerts.reduce((acc, a) => {
-    acc[a.status] = (acc[a.status] || 0) + 1;
-    return acc;
-  }, {});
-
-  const filtered = alertFilter
-    ? alerts.filter(a => a.status === alertFilter)
-    : alerts;
-
-  const filterBtn = (label, value) => (
-    <button
-      onClick={() => setAlertFilter(alertFilter === value ? "" : value)}
-      style={{
-        background: alertFilter === value ? (STATUS_COLORS[value]?.bg || "var(--surface)") : "var(--surface)",
-        border: `1px solid ${alertFilter === value ? (STATUS_COLORS[value]?.border || "var(--border)") : "var(--border)"}`,
-        color: alertFilter === value ? (STATUS_COLORS[value]?.text || "var(--text)") : "var(--muted)",
-        fontFamily: "var(--font-mono)", fontSize: 11, padding: "6px 14px",
-        cursor: "pointer", borderRadius: 2, transition: "all 0.2s",
-      }}
-    >
-      {label} {statusCounts[value] != null ? `(${statusCounts[value]})` : "(0)"}
-    </button>
-  );
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Summary stat row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
-        {[
-          ["OPEN ALERTS",       (statusCounts.NEW || 0) + (statusCounts.INVESTIGATING || 0), "var(--critical)"],
-          ["NEW",               statusCounts.NEW || 0,               "var(--critical)"],
-          ["INVESTIGATING",     statusCounts.INVESTIGATING || 0,      "var(--medium)"],
-          ["RESOLVED",          statusCounts.RESOLVED || 0,           "var(--low)"],
-          ["FALSE POSITIVES",   statusCounts.FALSE_POSITIVE || 0,     "var(--muted)"],
-        ].map(([label, value, color]) => (
-          <div key={label} style={{
-            background: "var(--panel)", border: `1px solid ${color}22`,
-            borderLeft: `3px solid ${color}`, borderRadius: 4, padding: "14px 16px",
-          }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--muted)", letterSpacing: 2, marginBottom: 6 }}>{label}</div>
-            <div style={{ fontFamily: "var(--font-head)", fontSize: 28, fontWeight: 800, color }}>{value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Filter bar */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", letterSpacing: 1 }}>FILTER:</span>
-        {filterBtn("ALL", "")}
-        {filterBtn("NEW", "NEW")}
-        {filterBtn("INVESTIGATING", "INVESTIGATING")}
-        {filterBtn("RESOLVED", "RESOLVED")}
-        {filterBtn("FALSE POSITIVE", "FALSE_POSITIVE")}
-        {!canEdit && (
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginLeft: "auto" }}>
-            ⓘ Viewer role — cannot update alert status
-          </span>
-        )}
-      </div>
-
-      {/* Alert list */}
-      <div>
-        {filtered.length === 0 ? (
-          <div style={{
-            fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)",
-            textAlign: "center", padding: 40,
-            background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 4,
-          }}>
-            {alerts.length === 0
-              ? "No alerts yet. Submit an event to generate alerts."
-              : "No alerts matching current filter."}
-          </div>
-        ) : (
-          filtered.map(alert => (
-            <AlertCard
-              key={alert.id}
-              alert={alert}
-              loading={triageLoading}
-              canEdit={canEdit}
-              onUpdateStatus={onUpdateStatus}
-            />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ══════════════════════════════════════════════════════════════════
 // MAIN APP
 // ══════════════════════════════════════════════════════════════════
@@ -792,9 +542,6 @@ export default function App() {
   const [tab, setTab]                 = useState("overview");
   const [eventResult, setEventResult] = useState(null);
   const [mlStatus, setMlStatus]       = useState(null);
-  const [alerts, setAlerts]           = useState([]);
-  const [alertFilter, setAlertFilter] = useState("");
-  const [triageLoading, setTriageLoading] = useState(null);
 
   const handleLogin = (userData) => {
     setUser(userData);
@@ -810,19 +557,17 @@ export default function App() {
     if (!getToken()) return;
     setLoading(true);
     try {
-      const [mRes, cRes, iRes, mlRes, aRes] = await Promise.all([
+      const [mRes, cRes, iRes, mlRes] = await Promise.all([
         apiFetch("/metrics"),
         apiFetch("/correlations?limit=20"),
         apiFetch(`/iocs?limit=50&offset=${iocPage * 50}${iocType ? `&ioc_type=${iocType}` : ""}`),
         apiFetch("/ml/status"),
-        apiFetch("/alerts?limit=100"),
       ]);
       if (mRes.ok) { setMetrics(await mRes.json()); setLive(true); }
       else if (mRes.status === 401) { handleLogout(); return; }
       if (cRes.ok) { const d = await cRes.json(); setCorr(d.results || []); }
       if (iRes.ok) { const d = await iRes.json(); setIocs(d.iocs || []); }
       if (mlRes.ok) { setMlStatus(await mlRes.json()); }
-      if (aRes.ok) { const d = await aRes.json(); setAlerts(d.alerts || []); }
       setLastUpdate(new Date().toISOString());
     } catch { setLive(false); }
     finally { setLoading(false); }
@@ -874,7 +619,6 @@ export default function App() {
           {navItem("iocs",        "IOC DATABASE")}
           {navItem("submit",      "SUBMIT EVENT")}
           {navItem("ml",          "ML STATUS")}
-          {navItem("alerts",       "ALERTS")}
         </div>
 
         <main style={{ flex:1, padding:24, maxWidth:1400, width:"100%", margin:"0 auto" }}>
@@ -1018,28 +762,6 @@ export default function App() {
                 </Panel>
               )}
             </div>
-          )}
-
-
-          {/* ── ALERTS TRIAGE ── */}
-          {tab === "alerts" && (
-            <AlertsTriage
-              alerts={alerts}
-              alertFilter={alertFilter}
-              setAlertFilter={setAlertFilter}
-              triageLoading={triageLoading}
-              userRole={user.role}
-              onUpdateStatus={async (alertId, newStatus, notes) => {
-                setTriageLoading(alertId);
-                try {
-                  const r = await apiFetch(`/alerts/${alertId}/status`, {
-                    method: "PATCH",
-                    body: JSON.stringify({ status: newStatus, notes }),
-                  });
-                  if (r.ok) fetchAll();
-                } finally { setTriageLoading(null); }
-              }}
-            />
           )}
 
         </main>
