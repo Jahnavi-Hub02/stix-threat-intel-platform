@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/   ./app/
 COPY data/  ./data/
 COPY run.py .
-COPY app.py .
+
 
 # Copy built React frontend from Stage 1
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
