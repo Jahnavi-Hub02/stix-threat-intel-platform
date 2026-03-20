@@ -68,3 +68,35 @@ def ml_predict(
         raise HTTPException(status_code=503, detail=f"ML deps not installed: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+    # ── Classifier status endpoint (added for hybrid ML support) ──────────────
+@router.get("/classifier/status")
+def ml_classifier_status(user: dict = Depends(verify_token)):
+    """
+    Returns whether the supervised Random Forest classifier is trained,
+    which attack classes it knows, and model metadata.
+    Requires any valid token (viewer+).
+    """
+    try:
+        from app.ml.classifier import status as clf_status
+        return clf_status()
+    except Exception as e:
+        return {"classifier_trained": False, "error": str(e)}
+
+
+@router.post("/classifier/predict")
+def ml_classifier_predict(
+    event: MLEventRequest,
+    user:  dict = Depends(require_role("analyst")),
+):
+    """
+    Classify a single event using the trained Random Forest classifier.
+    Returns: predicted_class, confidence, is_attack, risk_contribution.
+    Requires analyst role or higher.
+    """
+    try:
+        from app.ml.classifier import predict as clf_predict
+        result = clf_predict(event.model_dump())
+        return {"event_id": event.event_id, "classifier": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
