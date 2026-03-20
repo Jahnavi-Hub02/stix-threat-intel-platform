@@ -11,7 +11,7 @@ env:
   NODE_VERSION: "18"
 
 # ──────────────────────────────────────────────────────────────────
-# Job 1: Full Python test suite (199 tests)
+# Job 1: Full Python test suite (273 tests)
 # ──────────────────────────────────────────────────────────────────
 jobs:
   backend-tests:
@@ -39,7 +39,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Create required runtime directories
-        run: mkdir -p database models data
+        run: mkdir -p database models data reports
 
       - name: Run full test suite with coverage
         run: |

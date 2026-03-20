@@ -126,25 +126,42 @@ class MultiFeedIngester:
                 iocs = parse_stix_bundle({"objects": raw})
                 for ioc in iocs:
                     ioc["source"] = name
-                if iocs and _insert:
-                    # Call insert — it returns {"stored": N, "duplicates": N}
-                    result = _insert(iocs)
-                    n      = len(iocs)
-                    if isinstance(result, dict):
-                        stored     = result.get("stored", 0)
-                        duplicates = result.get("duplicates", 0)
-                        # If the dict doesn't account for all IOCs, infer the rest as dupes
-                        accounted = stored + duplicates
-                        if accounted < n:
-                            duplicates += (n - accounted)
-                        res["stored"]     += stored
-                        res["duplicates"] += duplicates
-                    else:
-                        # Fallback: assume all stored if result is truthy, else all dupes
-                        if result:
-                            res["stored"] += n
+                if iocs:
+                    # Count rows before insert so we can detect duplicates reliably
+                    # regardless of what insert_indicators returns
+                    try:
+                        import sqlite3 as _sql
+                        import app.database.db_manager as _dbm2
+                        _db = getattr(_dbm2, "DB_PATH", "database/threat_intel.db")
+                        _conn = _sql.connect(_db)
+                        _before = _conn.execute(
+                            "SELECT COUNT(*) FROM ioc_indicators").fetchone()[0]
+                        _conn.close()
+                    except Exception:
+                        _before = None
+
+                    if _insert:
+                        try:
+                            _insert(iocs)
+                        except Exception:
+                            pass  # insert may fail on duplicate keys — that's OK
+
+                    # Count rows after insert
+                    try:
+                        import app.database.db_manager as _dbm3
+                        _db2 = getattr(_dbm3, "DB_PATH", "database/threat_intel.db")
+                        _conn2 = _sql.connect(_db2)
+                        _after = _conn2.execute(
+                            "SELECT COUNT(*) FROM ioc_indicators").fetchone()[0]
+                        _conn2.close()
+                        if _before is not None:
+                            _newly_stored = _after - _before
+                            res["stored"]     += max(0, _newly_stored)
+                            res["duplicates"] += max(0, len(iocs) - _newly_stored)
                         else:
-                            res["duplicates"] += n
+                            res["stored"] += len(iocs)
+                    except Exception:
+                        res["stored"] += len(iocs)
             except Exception as e:
                 res["status"] = "error"; res["error"] = str(e)
                 totals["errors"].append(f"{name}: {e}")

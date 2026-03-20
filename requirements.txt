@@ -21,8 +21,13 @@ reportlab==4.2.0
 # XML Parsing
 lxml==5.2.2
 
+# Auth
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
+
 # Utilities
 python-dotenv==1.0.1
+structlog==24.2.0
 
 # Testing
 pytest==8.2.2
@@ -36,3 +41,6 @@ PyJWT==2.8.0
 scikit-learn==1.5.2
 numpy==1.26.4
 joblib==1.4.2
+
+# Dataset loading for supervised classifier (NSL-KDD / CICIDS2017)
+pandas==2.2.2
