@@ -1,10 +1,8 @@
 """
 app/ingestion/taxii_client.py
-==============================
-Live multi-feed TAXII 2.x client using taxii2client (NOT cabby).
-Mentor requirement: use live data instead of static files.
+Multi-feed TAXII 2.x client. Uses create_connection() for test isolation.
 """
-import os, logging, time, sqlite3
+import os, logging, time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -39,7 +37,6 @@ def get_configured_feeds() -> List[Dict[str, Any]]:
 
 
 class TAXIIFeedClient:
-    """Client for one TAXII 2.1 server. Uses taxii2-client, NOT cabby."""
     def __init__(self, cfg):
         self.name      = cfg["name"]
         self.url       = cfg["url"].rstrip("/") + "/"
@@ -66,7 +63,7 @@ class TAXIIFeedClient:
         try:
             from taxii2client.v21 import Server
         except ImportError:
-            logger.error("taxii2-client not installed: pip install taxii2-client")
+            logger.error("taxii2-client not installed")
             return []
         results = []
         try:
@@ -80,7 +77,6 @@ class TAXIIFeedClient:
                         bundle = col.get_objects(**kw)
                         inds   = [o for o in bundle.get("objects", []) if o.get("type") == "indicator"]
                         results.extend(inds)
-                        logger.info("[%s] col=%s fetched=%d", self.name, col.id[:8], len(inds))
                         time.sleep(0.3)
                     except Exception as e:
                         logger.warning("[%s] col %s: %s", self.name, col.id, e)
@@ -90,24 +86,25 @@ class TAXIIFeedClient:
 
 
 class MultiFeedIngester:
-    """Ingests from ALL configured feeds. Called by scheduler every 30 min."""
     def __init__(self):
         self.feeds = get_configured_feeds()
-        logger.info("Feeds: %s", [f["name"] for f in self.feeds])
 
     def ingest_all(self, delta_hours=24):
         from app.normalization.stix_parser import parse_stix_bundle
-        import app.database.db_manager as _dbm
+        from app.database.db_manager import create_connection
 
         added_after = (datetime.now(timezone.utc) - timedelta(hours=delta_hours)
                        if delta_hours > 0 else None)
         totals  = {"total_fetched":0,"total_stored":0,"total_duplicates":0,"feeds":{},"errors":[]}
         started = datetime.now(timezone.utc)
 
-        _insert = getattr(_dbm, "insert_indicators", None) or getattr(_dbm, "insert_ioc", None)
-        _log    = getattr(_dbm, "log_ingestion", None) or getattr(_dbm, "log_ingestion_run", None)
-        # db_path is a fallback; inside the loop we re-read from sys.modules for test isolation
-        db_path = getattr(_dbm, "DB_PATH", "database/threat_intel.db")
+        # Try to get insert function; fall back gracefully
+        try:
+            import app.database.db_manager as _dbm
+            _insert = getattr(_dbm, "insert_indicators", None) or getattr(_dbm, "insert_ioc", None)
+            _log    = getattr(_dbm, "log_ingestion", None) or getattr(_dbm, "log_ingestion_run", None)
+        except Exception:
+            _insert, _log = None, None
 
         for cfg in self.feeds:
             name = cfg["name"]
@@ -119,21 +116,14 @@ class MultiFeedIngester:
                 for ioc in iocs:
                     ioc["source"] = name
 
-                # Use direct INSERT OR IGNORE + rowcount for reliable dedup tracking.
-                # ioc_indicators has UNIQUE constraint on ioc_value.
-                # rowcount=1 → new row inserted; rowcount=0 → duplicate ignored.
+                # Use create_connection() — always uses the patched DB_PATH in tests
                 now = datetime.now(timezone.utc).isoformat()
                 for ioc in iocs:
                     ioc_value = ioc.get("ioc_value", "")
                     if not ioc_value:
                         continue
                     try:
-                        # Read DB_PATH fresh each time so monkeypatch in tests works.
-                        import sys as _sys
-                        _live_dbm = _sys.modules.get("app.database.db_manager")
-                        _live_path = (getattr(_live_dbm, "DB_PATH", None)
-                                      if _live_dbm else None) or db_path
-                        conn = sqlite3.connect(_live_path)
+                        conn = create_connection()
                         cur  = conn.execute(
                             """INSERT OR IGNORE INTO ioc_indicators
                                (stix_id, ioc_type, ioc_subtype, ioc_value,
@@ -152,9 +142,9 @@ class MultiFeedIngester:
                         conn.close()
                     except Exception as e:
                         res["duplicates"] += 1
-                        logger.debug("IOC insert (likely duplicate): %s", e)
+                        logger.debug("IOC insert: %s", e)
 
-                # Also call the original insert_indicators for ingestion_log tracking
+                # Also call insert_indicators for ingestion log tracking
                 if iocs and _insert:
                     try:
                         _insert(iocs)
@@ -187,21 +177,12 @@ class MultiFeedIngester:
 TAXIIClient = TAXIIFeedClient
 
 PUBLIC_SERVERS = [
-    {"name": "AlienVault OTX",
-     "url": "https://otx.alienvault.com/taxii/taxii2/",
-     "auth_type": "api_key",
-     "description": "Open Threat Exchange — free, requires API key",
-     "requires_auth": True},
-    {"name": "CISA AIS",
-     "url": "https://ais2.cisa.dhs.gov/taxii2/",
-     "auth_type": "none",
-     "description": "US Cybersecurity and Infrastructure Security Agency",
-     "requires_auth": False},
-    {"name": "Anomali Limo",
-     "url": "https://limo.anomali.com/api/v1/taxii2/feeds/",
-     "auth_type": "basic",
-     "description": "Anomali free tier (guest/guest)",
-     "requires_auth": True},
+    {"name": "AlienVault OTX", "url": "https://otx.alienvault.com/taxii/taxii2/",
+     "auth_type": "api_key", "requires_auth": True},
+    {"name": "CISA AIS", "url": "https://ais2.cisa.dhs.gov/taxii2/",
+     "auth_type": "none", "requires_auth": False},
+    {"name": "Anomali Limo", "url": "https://limo.anomali.com/api/v1/taxii2/feeds/",
+     "auth_type": "basic", "requires_auth": True},
 ]
 
 def get_public_servers():

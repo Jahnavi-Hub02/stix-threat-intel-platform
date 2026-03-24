@@ -37,10 +37,15 @@ SEVERITY_COLORS = {
 }
 
 
-def generate_report(event: dict, results: list, output_dir: str = ".", ml_result: dict = None) -> str:
+def generate_report(event: dict, results: list, output_dir: str = "reports", ml_result: dict = None) -> str:
     """Generate a professional PDF threat intelligence report including ML analysis."""
-    os.makedirs(output_dir, exist_ok=True)
-    file_name = os.path.join(output_dir, f"Threat_Report_{event['event_id']}.pdf")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
+
+    reports_dir = os.path.join(PROJECT_ROOT, "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+
+    file_name = os.path.join(reports_dir, f"Threat_Report_{event['event_id']}.pdf")
 
     doc = SimpleDocTemplate(
         file_name, pagesize=A4,

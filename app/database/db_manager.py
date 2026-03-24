@@ -33,6 +33,11 @@ def create_tables():
     conn   = create_connection()
     cursor = conn.cursor()
 
+    # FIX: Added `severity` column to ioc_indicators.
+    # It was missing from the schema but queried by _lookup_ioc in log_checker.py:
+    #   SELECT ioc_type, ioc_value, confidence, severity, source, last_seen ...
+    # The missing column caused an OperationalError that was silently caught,
+    # making _lookup_ioc always return None → total_hits always 0.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ioc_indicators (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,6 +46,7 @@ def create_tables():
         ioc_subtype TEXT,
         ioc_value   TEXT UNIQUE,
         confidence  INTEGER DEFAULT 50,
+        severity    TEXT DEFAULT 'medium',
         source      TEXT,
         is_active   INTEGER DEFAULT 1,
         first_seen  TIMESTAMP,
@@ -48,6 +54,13 @@ def create_tables():
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    # Migration: add severity column to existing DBs that were created without it
+    try:
+        cursor.execute("ALTER TABLE ioc_indicators ADD COLUMN severity TEXT DEFAULT 'medium'")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists — safe to ignore
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS event_logs (
@@ -116,10 +129,6 @@ def create_tables():
     )
     """)
 
-    # ── Alert Triage Table ────────────────────────────────────────
-    # alert_type  : "threat_detected" | "anomaly_detected" | "confirmed_threat"
-    # assigned_to : username of analyst who last updated the alert
-    # resolved_at : timestamp when status changed to RESOLVED or FALSE_POSITIVE
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS alerts (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -233,6 +242,17 @@ def update_alert(alert_id: int, new_status: str,
 
 # ── IOC Indicators ────────────────────────────────────────────────
 
+def _severity_from_confidence(confidence: int) -> str:
+    """Derive a severity label from a confidence score (0-100)."""
+    if confidence >= 90:
+        return "critical"
+    if confidence >= 70:
+        return "high"
+    if confidence >= 50:
+        return "medium"
+    return "low"
+
+
 def insert_indicators(indicators, source_label="Unknown"):
     """Insert IOC indicators with deduplication and ingestion audit logging."""
     conn   = create_connection()
@@ -258,16 +278,22 @@ def insert_indicators(indicators, source_label="Unknown"):
             )
             total_duplicates += 1
         else:
+            # FIX: derive severity from confidence if not explicitly provided,
+            # so _lookup_ioc can always read a meaningful severity value.
+            confidence = ind.get("confidence", 50)
+            severity   = ind.get("severity") or _severity_from_confidence(confidence)
             cursor.execute("""
                 INSERT INTO ioc_indicators
-                (stix_id, ioc_type, ioc_subtype, ioc_value, confidence, source, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (stix_id, ioc_type, ioc_subtype, ioc_value,
+                 confidence, severity, source, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ind.get("stix_id", "unknown"),
                 ind.get("ioc_type", "unknown"),
                 ind.get("ioc_subtype", ""),
                 ind["ioc_value"],
-                ind.get("confidence", 50),
+                confidence,
+                severity,
                 ind.get("source", source_label),
                 now, now
             ))
