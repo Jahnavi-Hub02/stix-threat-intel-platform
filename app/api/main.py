@@ -65,7 +65,7 @@ from app.ingestion import (
 )
 from app.api.ml import router as ml_router
 from app.auth import auth_router, verify_token, require_role
-from app.alerts import alerts_router
+from app.api.logs_router import router as logs_router
 
 logger = get_logger(__name__)
 
@@ -163,7 +163,7 @@ app.add_middleware(
 # Mount routers
 app.include_router(auth_router)    # /auth/*
 app.include_router(ml_router)      # /ml/*
-app.include_router(alerts_router)  # /alerts/*
+app.include_router(logs_router)  # /alerts/*
 
 
 # ── Public Health ──────────────────────────────────────────────────

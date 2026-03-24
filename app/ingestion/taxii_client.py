@@ -1,38 +1,30 @@
 """
-app/ingestion/taxii_client.py  —  Multi-feed TAXII 2.x client
-Uses taxii2-client (NOT cabby — cabby is TAXII 1.x only, does not support STIXv2).
+app/ingestion/taxii_client.py
+==============================
+Live multi-feed TAXII 2.x client using taxii2client (NOT cabby).
+Mentor requirement: use live data instead of static files.
 """
-import os, logging, time
+import os, logging, time, sqlite3
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+
 def get_configured_feeds() -> List[Dict[str, Any]]:
-    """
-    Load feeds from .env.  Format:
-        FEED_1_NAME=AlienVault OTX
-        FEED_1_URL=https://otx.alienvault.com/taxii/taxii2/
-        FEED_1_AUTH=api_key
-        FEED_1_API_KEY=<your key>
-        FEED_2_NAME=CISA AIS
-        FEED_2_URL=https://ais2.cisa.dhs.gov/taxii2/
-        FEED_2_AUTH=none
-    Falls back to single OTX feed via TAXII_SERVER_URL + OTX_API_KEY.
-    """
     feeds, i = [], 1
     while True:
         name = os.getenv(f"FEED_{i}_NAME")
         if not name:
             break
-        url  = os.getenv(f"FEED_{i}_URL", "")
+        url = os.getenv(f"FEED_{i}_URL", "")
         if url and os.getenv(f"FEED_{i}_ENABLED", "true").lower() == "true":
             feeds.append({
                 "name": name, "url": url,
                 "auth_type": os.getenv(f"FEED_{i}_AUTH", "none").lower(),
-                "api_key":  os.getenv(f"FEED_{i}_API_KEY", ""),
-                "username": os.getenv(f"FEED_{i}_USERNAME", ""),
-                "password": os.getenv(f"FEED_{i}_PASSWORD", ""),
+                "api_key":   os.getenv(f"FEED_{i}_API_KEY", ""),
+                "username":  os.getenv(f"FEED_{i}_USERNAME", ""),
+                "password":  os.getenv(f"FEED_{i}_PASSWORD", ""),
             })
         i += 1
     if not feeds:
@@ -106,16 +98,15 @@ class MultiFeedIngester:
     def ingest_all(self, delta_hours=24):
         from app.normalization.stix_parser import parse_stix_bundle
         import app.database.db_manager as _dbm
+
         added_after = (datetime.now(timezone.utc) - timedelta(hours=delta_hours)
                        if delta_hours > 0 else None)
         totals  = {"total_fetched":0,"total_stored":0,"total_duplicates":0,"feeds":{},"errors":[]}
         started = datetime.now(timezone.utc)
 
-        # Resolve correct function names (varies by db_manager version)
-        _insert = (getattr(_dbm,"insert_indicators",None) or
-                   getattr(_dbm,"insert_ioc",None))
-        _log    = (getattr(_dbm,"log_ingestion",None) or
-                   getattr(_dbm,"log_ingestion_run",None))
+        _insert = getattr(_dbm, "insert_indicators", None) or getattr(_dbm, "insert_ioc", None)
+        _log    = getattr(_dbm, "log_ingestion", None) or getattr(_dbm, "log_ingestion_run", None)
+        db_path = getattr(_dbm, "DB_PATH", "database/threat_intel.db")
 
         for cfg in self.feeds:
             name = cfg["name"]
@@ -126,49 +117,53 @@ class MultiFeedIngester:
                 iocs = parse_stix_bundle({"objects": raw})
                 for ioc in iocs:
                     ioc["source"] = name
-                if iocs:
-                    # Count rows before insert so we can detect duplicates reliably
-                    # regardless of what insert_indicators returns
-                    try:
-                        import sqlite3 as _sql
-                        import app.database.db_manager as _dbm2
-                        _db = getattr(_dbm2, "DB_PATH", "database/threat_intel.db")
-                        _conn = _sql.connect(_db)
-                        _before = _conn.execute(
-                            "SELECT COUNT(*) FROM ioc_indicators").fetchone()[0]
-                        _conn.close()
-                    except Exception:
-                        _before = None
 
-                    if _insert:
-                        try:
-                            _insert(iocs)
-                        except Exception:
-                            pass  # insert may fail on duplicate keys — that's OK
-
-                    # Count rows after insert
+                # Use direct INSERT OR IGNORE + rowcount for reliable dedup tracking.
+                # ioc_indicators has UNIQUE constraint on ioc_value.
+                # rowcount=1 → new row inserted; rowcount=0 → duplicate ignored.
+                now = datetime.now(timezone.utc).isoformat()
+                for ioc in iocs:
+                    ioc_value = ioc.get("ioc_value", "")
+                    if not ioc_value:
+                        continue
                     try:
-                        import app.database.db_manager as _dbm3
-                        _db2 = getattr(_dbm3, "DB_PATH", "database/threat_intel.db")
-                        _conn2 = _sql.connect(_db2)
-                        _after = _conn2.execute(
-                            "SELECT COUNT(*) FROM ioc_indicators").fetchone()[0]
-                        _conn2.close()
-                        if _before is not None:
-                            _newly_stored = _after - _before
-                            res["stored"]     += max(0, _newly_stored)
-                            res["duplicates"] += max(0, len(iocs) - _newly_stored)
+                        conn = sqlite3.connect(db_path)
+                        cur  = conn.execute(
+                            """INSERT OR IGNORE INTO ioc_indicators
+                               (stix_id, ioc_type, ioc_subtype, ioc_value,
+                                confidence, source, first_seen, last_seen)
+                               VALUES (?,?,?,?,?,?,?,?)""",
+                            (ioc.get("stix_id",""), ioc.get("ioc_type","unknown"),
+                             ioc.get("ioc_subtype",""), ioc_value,
+                             ioc.get("confidence",50), ioc.get("source", name),
+                             now, now)
+                        )
+                        conn.commit()
+                        if cur.rowcount == 1:
+                            res["stored"] += 1
                         else:
-                            res["stored"] += len(iocs)
+                            res["duplicates"] += 1
+                        conn.close()
+                    except Exception as e:
+                        res["duplicates"] += 1
+                        logger.debug("IOC insert (likely duplicate): %s", e)
+
+                # Also call the original insert_indicators for ingestion_log tracking
+                if iocs and _insert:
+                    try:
+                        _insert(iocs)
                     except Exception:
-                        res["stored"] += len(iocs)
+                        pass
+
             except Exception as e:
                 res["status"] = "error"; res["error"] = str(e)
                 totals["errors"].append(f"{name}: {e}")
+
             totals["total_fetched"]    += res["fetched"]
             totals["total_stored"]     += res["stored"]
             totals["total_duplicates"] += res["duplicates"]
             totals["feeds"][name]       = res
+
             if _log:
                 try:
                     _log(source=name, status=res["status"],
@@ -176,14 +171,13 @@ class MultiFeedIngester:
                          error_message=res.get("error"))
                 except Exception:
                     pass
+
         totals["elapsed_seconds"] = round(
-            (datetime.now(timezone.utc)-started).total_seconds(), 2)
+            (datetime.now(timezone.utc) - started).total_seconds(), 2)
         return totals
 
-# ─── Backward-compatibility aliases ──────────────────────────────────────────
-# app/ingestion/__init__.py imports TAXIIClient and PUBLIC_SERVERS.
-# These keep the old interface working.
 
+# ─── Backward-compatibility aliases ───────────────────────────────────────────
 TAXIIClient = TAXIIFeedClient
 
 PUBLIC_SERVERS = [
@@ -204,12 +198,8 @@ PUBLIC_SERVERS = [
      "requires_auth": True},
 ]
 
-
 def get_public_servers():
-    """Return list of pre-configured public TAXII servers."""
     return PUBLIC_SERVERS
 
-
 def ingest_all_public_feeds(delta_hours: int = 24):
-    """Backward-compatible wrapper — delegates to MultiFeedIngester."""
     return MultiFeedIngester().ingest_all(delta_hours=delta_hours)

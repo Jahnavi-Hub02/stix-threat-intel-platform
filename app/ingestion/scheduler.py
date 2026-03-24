@@ -1,14 +1,14 @@
 """
 app/ingestion/scheduler.py
 APScheduler background scheduler — runs MultiFeedIngester every 30 minutes.
-Singleton pattern: one instance shared across the whole app.
+Also runs IOC expiry cleanup after each ingestion.
 """
 import logging
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 
 logger = logging.getLogger(__name__)
+
 
 class IngestionScheduler:
     def __init__(self):
@@ -25,6 +25,16 @@ class IngestionScheduler:
             self.last_run    = datetime.utcnow().isoformat()
             self.total_runs += 1
             self.last_result = result
+
+            # Mentor requirement: handle outdated IOCs after every ingestion
+            try:
+                from app.ingestion.ioc_manager import expire_outdated_iocs
+                expiry = expire_outdated_iocs(max_age_days=30)
+                self.last_result["expired_iocs"] = expiry
+                logger.info("IOC expiry: %s", expiry)
+            except Exception as e:
+                logger.warning("IOC expiry failed (non-fatal): %s", e)
+
             logger.info("Scheduler run #%d: stored=%d", self.total_runs,
                         result.get("total_stored", 0))
         except Exception as e:
@@ -46,9 +56,7 @@ class IngestionScheduler:
             self.is_running = False
 
     def trigger_now(self):
-        """Manually trigger ingestion without waiting for the interval."""
-        self.scheduler.add_job(self._job, id="manual_trigger",
-                                replace_existing=True)
+        self.scheduler.add_job(self._job, id="manual_trigger", replace_existing=True)
 
     def status(self):
         next_run = None
@@ -70,33 +78,18 @@ class IngestionScheduler:
         }
 
 
-# Singleton
 scheduler = IngestionScheduler()
 
 
-# ─── Backward-compatibility functions ─────────────────────────────────────────
-# app/ingestion/__init__.py and app/api/main.py import these names.
-
 def start_scheduler(interval_minutes: int = 30):
-    """Start the background ingestion scheduler."""
     scheduler.start(interval_minutes=interval_minutes)
 
-
 def get_scheduler_status() -> dict:
-    """Return scheduler status dict."""
     return scheduler.status()
 
-
 def trigger_ingestion_now():
-    """Manually trigger an ingestion run immediately."""
     scheduler.trigger_now()
 
-
 def get_public_servers() -> list:
-    """
-    Return list of pre-configured public TAXII servers.
-    Delegates to taxii_client where the list lives.
-    Called by app/ingestion/__init__.py and the /ingest/servers API endpoint.
-    """
     from app.ingestion.taxii_client import PUBLIC_SERVERS
     return PUBLIC_SERVERS
