@@ -33,6 +33,7 @@ models/
 # ── Generated Reports (runtime output) ────────────────────────────
 Threat_Report_*.pdf
 reports/
+*.zip
 
 # ── Test Artifacts ────────────────────────────────────────────────
 .pytest_cache/
