@@ -106,6 +106,7 @@ class MultiFeedIngester:
 
         _insert = getattr(_dbm, "insert_indicators", None) or getattr(_dbm, "insert_ioc", None)
         _log    = getattr(_dbm, "log_ingestion", None) or getattr(_dbm, "log_ingestion_run", None)
+        # db_path is a fallback; inside the loop we re-read from sys.modules for test isolation
         db_path = getattr(_dbm, "DB_PATH", "database/threat_intel.db")
 
         for cfg in self.feeds:
@@ -127,7 +128,12 @@ class MultiFeedIngester:
                     if not ioc_value:
                         continue
                     try:
-                        conn = sqlite3.connect(db_path)
+                        # Read DB_PATH fresh each time so monkeypatch in tests works.
+                        import sys as _sys
+                        _live_dbm = _sys.modules.get("app.database.db_manager")
+                        _live_path = (getattr(_live_dbm, "DB_PATH", None)
+                                      if _live_dbm else None) or db_path
+                        conn = sqlite3.connect(_live_path)
                         cur  = conn.execute(
                             """INSERT OR IGNORE INTO ioc_indicators
                                (stix_id, ioc_type, ioc_subtype, ioc_value,

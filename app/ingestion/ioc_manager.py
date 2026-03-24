@@ -23,9 +23,9 @@ def expire_outdated_iocs(max_age_days: int = 30) -> dict:
 
     Returns summary: {"expired": N, "still_active": N}
     """
-    import app.database.db_manager as dbm
-    import sqlite3
-    db = getattr(dbm, "DB_PATH", "database/threat_intel.db")
+    import sqlite3, sys as _sys
+    _dbm = _sys.modules.get("app.database.db_manager")
+    db = (getattr(_dbm, "DB_PATH", None) if _dbm else None) or "database/threat_intel.db"
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
 
     try:
@@ -48,9 +48,9 @@ def expire_outdated_iocs(max_age_days: int = 30) -> dict:
 
 def ioc_health_summary() -> dict:
     """Return freshness statistics for stored IOCs."""
-    import app.database.db_manager as dbm
-    import sqlite3
-    db = getattr(dbm, "DB_PATH", "database/threat_intel.db")
+    import sqlite3, sys as _sys
+    _dbm = _sys.modules.get("app.database.db_manager")
+    db = (getattr(_dbm, "DB_PATH", None) if _dbm else None) or "database/threat_intel.db"
     now = datetime.now(timezone.utc).isoformat()
     week_ago  = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     month_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()

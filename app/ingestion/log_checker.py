@@ -77,9 +77,10 @@ def _extract_candidates(line: str) -> List[Dict]:
 def _lookup_ioc(value: str) -> Optional[Dict]:
     """Check if a value exists in the IOC database (active IOCs only)."""
     try:
-        import sqlite3
-        import app.database.db_manager as dbm
-        db = getattr(dbm, "DB_PATH", "database/threat_intel.db")
+        import sqlite3, sys as _sys
+        # Read DB_PATH fresh from sys.modules so monkeypatch works in tests
+        _dbm = _sys.modules.get("app.database.db_manager")
+        db = (getattr(_dbm, "DB_PATH", None) if _dbm else None) or "database/threat_intel.db"
         conn = sqlite3.connect(db)
         row  = conn.execute(
             """SELECT ioc_type, ioc_value, confidence, severity, source, last_seen
