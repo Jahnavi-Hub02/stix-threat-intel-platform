@@ -210,3 +210,25 @@ def require_role(minimum_role: str):
             )
         return user
     return _check_role
+
+
+def verify_token_string(token: str) -> dict:
+    """
+    Validate a raw JWT string — used for WebSocket auth where tokens are
+    passed as query params instead of Authorization headers.
+
+    Raises HTTPException 401 if the token is missing, expired, or invalid.
+    Returns the decoded payload dict on success.
+    """
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="WebSocket authentication required. Pass token=<jwt> as a query param.",
+        )
+    payload = decode_token(token)
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type. Use the access token.",
+        )
+    return payload

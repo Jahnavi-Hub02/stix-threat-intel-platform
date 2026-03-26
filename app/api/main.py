@@ -1,6 +1,11 @@
 """
-STIX 2.1 Threat Intelligence Correlation Platform — REST API v2.4.0
+STIX 2.1 Threat Intelligence Correlation Platform — REST API v2.5.0
 ====================================================================
+Changes in v2.5.0:
+- Added POST /iocs/expire  (analyst+) — manually expire outdated IOCs
+- Added GET  /iocs/health  (viewer+)  — IOC freshness/health summary
+- Added POST /ml/train-classifier (analyst+) — train RF on NSL-KDD dataset
+
 Changes in v2.4.0:
 - Added /alerts/* endpoints (Alert Triage workflow)
 - Added event_id path-traversal validation on POST /event
@@ -19,6 +24,7 @@ Viewer endpoints  (any valid token):
   GET  /metrics
   GET  /iocs
   GET  /iocs/{value}
+  GET  /iocs/health
   GET  /correlations
   GET  /ml/status
   GET  /scheduler/status
@@ -29,7 +35,9 @@ Viewer endpoints  (any valid token):
 
 Analyst endpoints (role >= analyst):
   POST /event
+  POST /iocs/expire
   POST /ml/train
+  POST /ml/train-classifier
   POST /ml/predict
   POST /manual-ingest
   POST /ingest/file
@@ -219,6 +227,61 @@ def list_iocs(
             "ioc_type_filter": ioc_type, "iocs": iocs}
 
 
+
+
+@app.get("/iocs/health", tags=["IOCs"])
+def ioc_health(user: dict = Depends(verify_token)):
+    """
+    IOC freshness and health summary.
+
+    Returns counts of total, active, inactive, fresh (last 7 days),
+    recently seen (last 30 days), and stale IOCs.
+
+    Requires any valid token (viewer+).
+    """
+    from app.ingestion.ioc_manager import ioc_health_summary
+    return ioc_health_summary()
+
+
+@app.post("/iocs/expire", tags=["IOCs"])
+def expire_iocs(
+    max_age_days: int  = Query(default=90, ge=1, le=3650,
+                               description="Mark IOCs unseen for this many days as inactive"),
+    user:         dict = Depends(require_role("analyst")),
+):
+    """
+    Manually expire outdated IOCs.
+
+    Sets is_active=0 for any IOC whose last_seen timestamp is older than
+    max_age_days. This keeps the threat intel database fresh and prevents
+    stale indicators from triggering false positives.
+
+    Examples:
+      POST /iocs/expire?max_age_days=90   (default — expire IOCs older than 90 days)
+      POST /iocs/expire?max_age_days=30   (aggressive — expire IOCs older than 30 days)
+      POST /iocs/expire?max_age_days=365  (conservative — expire IOCs older than 1 year)
+
+    Returns:
+      expired      — number of IOCs marked inactive
+      still_active — number of IOCs still active after expiry
+
+    Requires analyst role or higher.
+    """
+    from app.ingestion.ioc_manager import expire_outdated_iocs
+    result = expire_outdated_iocs(max_age_days=max_age_days)
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    return {
+        "status":       "ok",
+        "max_age_days": max_age_days,
+        "expired":      result["expired"],
+        "still_active": result["still_active"],
+        "message": (
+            f"Expired {result['expired']} IOC(s) older than {max_age_days} days. "
+            f"{result['still_active']} IOC(s) remain active."
+        ),
+    }
+
 @app.get("/iocs/{ioc_value:path}", tags=["IOCs"])
 def lookup_ioc(ioc_value: str, user: dict = Depends(verify_token)):
     from app.database.db_manager import create_connection
@@ -230,6 +293,7 @@ def lookup_ioc(ioc_value: str, user: dict = Depends(verify_token)):
     if not row:
         raise HTTPException(status_code=404, detail=f"IOC '{ioc_value}' not found.")
     return {"status": "found", "ioc": dict(row)}
+
 
 
 # ── Protected: Events (analyst+) ──────────────────────────────────

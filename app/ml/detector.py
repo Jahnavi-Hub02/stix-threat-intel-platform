@@ -245,6 +245,24 @@ class AnomalyDetector:
             "hour_of_day","day_of_week","port_category",
             "ioc_match_count","risk_score_normalized"
         ]
+
+        # ── Surface classifier evaluation at top level ────────────────────────
+        # clf_status() includes last_evaluation when rf_evaluation.json exists.
+        # Promote the most useful fields so the dashboard sees them directly
+        # without needing to dig into nested keys.
+        last_eval = clf_st.get("last_evaluation", {})
+        evaluation_summary = None
+        if last_eval:
+            evaluation_summary = {
+                "trained_at":    last_eval.get("trained_at"),
+                "accuracy":      last_eval.get("accuracy"),
+                "accuracy_pct":  f"{last_eval.get('accuracy', 0) * 100:.2f}%",
+                "classes":       last_eval.get("classes", []),
+                "total_samples": last_eval.get("total_samples"),
+                "dataset_type":  last_eval.get("dataset_type"),
+                "top_features":  last_eval.get("top_features", [])[:5],
+            }
+
         return {
             # Flat keys — test_ml.py checks these at top level
             "model_trained":     self._model is not None,
@@ -252,7 +270,9 @@ class AnomalyDetector:
             "min_train_samples": MIN_TRAIN_SAMPLES,
             "contamination":     CONTAMINATION,
             "feature_names":     feat_names,
-            # Nested detail for new tests
+            # Promoted evaluation summary — visible at top level of /ml/status
+            "evaluation":        evaluation_summary,
+            # Nested detail
             "isolation_forest": {
                 "model_trained":    self._model is not None,
                 "events_collected": n_events,

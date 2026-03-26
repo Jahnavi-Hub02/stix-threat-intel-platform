@@ -10,8 +10,9 @@ Dataset instructions:
   CICIDS2017 (full, ~10 min):    https://www.unb.ca/cic/datasets/ids-2017.html
   Kaggle NSL-KDD mirror:         https://www.kaggle.com/datasets/hassan06/nslkdd
 """
-import os, logging, joblib
+import os, json, logging, joblib
 import numpy as np
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ MODEL_DIR    = os.getenv("ML_MODEL_DIR", "models")
 CLF_PATH     = os.path.join(MODEL_DIR, "rf_classifier.pkl")
 SCALER_PATH  = os.path.join(MODEL_DIR, "rf_scaler.pkl")
 ENCODER_PATH = os.path.join(MODEL_DIR, "label_encoder.pkl")
+EVAL_PATH    = os.path.join(MODEL_DIR, "rf_evaluation.json")
 
 # NSL-KDD 41 column names (no header in file)
 NSLKDD_COLS = [
@@ -69,13 +71,68 @@ ATTACK_RISK = {
     "PortScan":6,"BENIGN":0,
 }
 
+# ─── Live-aligned feature columns ────────────────────────────────────────────
+# These are the NSL-KDD columns that can be meaningfully extracted from a live
+# POST /event payload. Training uses ONLY these columns so that the model
+# trained offline matches exactly what predict() sends at runtime.
+#
+# Mapping to event fields:
+#   protocol_type  ← event["protocol"]        (encoded: tcp=0, udp=1, icmp=2, …)
+#   dst_bytes      ← 0 (not in live payload, default)
+#   land           ← 1 if src_ip == dst_ip else 0
+#   logged_in      ← 0 (not in live payload, default)
+#   count          ← 0 (not in live payload, default)
+#   srv_count      ← 0 (not in live payload, default)
+#   dst_host_count ← 0 (not in live payload, default)
+#   dst_host_srv_count ← 0 (not in live payload, default)
+#   duration       ← 0 (not in live payload, default)
+#   dst_port_cat   ← derived from destination_port (web/db/admin/mail/other)
+#   hour_of_day    ← derived from event["timestamp"]
+#   day_of_week    ← derived from event["timestamp"]
+#   is_private_src ← derived from event["source_ip"]
+#   is_private_dst ← derived from event["destination_ip"]
+LIVE_FEATURE_COLS = [
+    "protocol_type",     # encoded integer: tcp=0 udp=1 icmp=2
+    "dst_bytes",         # bytes from server → client  (0 if unavailable)
+    "land",              # 1 if src_ip == dst_ip
+    "logged_in",         # 0 if unavailable
+    "count",             # connections to same host/2s window  (0 if unavailable)
+    "srv_count",         # connections to same service/2s window (0 if unavailable)
+    "dst_host_count",    # (0 if unavailable)
+    "dst_host_srv_count",# (0 if unavailable)
+    "duration",          # connection duration seconds (0 if unavailable)
+]
+# Plus 5 derived features appended during extract_live_features():
+#   dst_port_cat, hour_of_day, day_of_week, is_private_src, is_private_dst
+# Total: 14 features — consistent between train() and predict()
+N_LIVE_FEATURES = len(LIVE_FEATURE_COLS) + 5  # = 14
+
 
 # ─── Live Feature Extraction ────────────────────────────────────────────────
 
 def extract_live_features(event: Dict) -> list:
     """
-    Extract 7 numeric features from a live POST /event payload.
-    These features overlap with both NSL-KDD and CICIDS2017.
+    Extract 14 numeric features from a live POST /event payload.
+
+    The first 9 features correspond directly to LIVE_FEATURE_COLS (NSL-KDD
+    columns). The last 5 are derived from the event's IP/port/timestamp fields.
+    This exact vector is what the trained model expects at prediction time.
+
+    Feature vector (14 dimensions):
+      [0]  protocol_type    — tcp=0, udp=1, icmp=2, other=3
+      [1]  dst_bytes        — 0 (not available in live payload)
+      [2]  land             — 1 if source_ip == destination_ip
+      [3]  logged_in        — 0 (not available in live payload)
+      [4]  count            — 0 (not available in live payload)
+      [5]  srv_count        — 0 (not available in live payload)
+      [6]  dst_host_count   — 0 (not available in live payload)
+      [7]  dst_host_srv_count — 0 (not available in live payload)
+      [8]  duration         — 0 (not available in live payload)
+      [9]  dst_port_cat     — 0=other 1=web 2=db 3=admin/backdoor 4=mail
+      [10] hour_of_day      — 0-23 UTC
+      [11] day_of_week      — 0=Mon … 6=Sun
+      [12] is_private_src   — 1 if source IP is RFC-1918
+      [13] is_private_dst   — 1 if destination IP is RFC-1918
     """
     import socket, struct
     from datetime import datetime, timezone
@@ -94,29 +151,46 @@ def extract_live_features(event: Dict) -> list:
                 return 1
         return 0
 
-    dst = event.get("destination_port") or 0
-    proto = (event.get("protocol") or "").upper()
-    proto_enc = {"TCP":1,"UDP":2,"ICMP":3}.get(proto, 0)
+    proto = (event.get("protocol") or "").lower()
+    proto_enc = {"tcp": 0, "udp": 1, "icmp": 2}.get(proto, 3)
 
-    WEB   = {80,443,8080,8443,8000}
-    DB    = {1433,1521,3306,5432,6379,27017}
-    ADMIN = {22,23,3389,4444,5555,6666,7777,9999,1337,31337}
-    MAIL  = {25,110,143,465,587,993,995}
+    src_ip = event.get("source_ip", "") or ""
+    dst_ip = event.get("destination_ip", "") or ""
+    land   = 1 if src_ip and src_ip == dst_ip else 0
+
+    dst = event.get("destination_port") or 0
+    WEB   = {80, 443, 8080, 8443, 8000}
+    DB    = {1433, 1521, 3306, 5432, 6379, 27017}
+    ADMIN = {22, 23, 3389, 4444, 5555, 6666, 7777, 9999, 1337, 31337}
+    MAIL  = {25, 110, 143, 465, 587, 993, 995}
     cat   = (1 if dst in WEB else 2 if dst in DB else
              3 if dst in ADMIN else 4 if dst in MAIL else 0)
 
     ts = event.get("timestamp", "")
     try:
-        dt  = datetime.fromisoformat(ts.replace("Z","+00:00")).astimezone(timezone.utc)
+        dt  = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
         hr  = dt.hour
         dow = dt.weekday()
     except Exception:
         hr, dow = 12, 0
 
-    return [float(dst), float(proto_enc),
-            float(is_private(event.get("source_ip",""))),
-            float(is_private(event.get("destination_ip",""))),
-            float(hr), float(dow), float(cat)]
+    # 9 NSL-KDD aligned features + 5 derived = 14 total
+    return [
+        float(proto_enc),   # [0] protocol_type
+        0.0,                # [1] dst_bytes        (unavailable)
+        float(land),        # [2] land
+        0.0,                # [3] logged_in        (unavailable)
+        0.0,                # [4] count            (unavailable)
+        0.0,                # [5] srv_count        (unavailable)
+        0.0,                # [6] dst_host_count   (unavailable)
+        0.0,                # [7] dst_host_srv_count (unavailable)
+        0.0,                # [8] duration         (unavailable)
+        float(cat),         # [9] dst_port_cat
+        float(hr),          # [10] hour_of_day
+        float(dow),         # [11] day_of_week
+        float(is_private(src_ip)),   # [12] is_private_src
+        float(is_private(dst_ip)),   # [13] is_private_dst
+    ]
 
 
 # ─── Training ────────────────────────────────────────────────────────────────
@@ -132,48 +206,52 @@ def train(dataset_path: str, dataset_type: str = "auto",
     dataset_type : str   "nslkdd" | "cicids2017" | "auto"
     sample_size  : int   Rows to sample (None = full dataset)
     """
-    import pandas as pd
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.preprocessing import StandardScaler, LabelEncoder
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import classification_report, accuracy_score
 
-    # Auto-detect
+    # Auto-detect dataset type from filename
     if dataset_type == "auto":
         fname = os.path.basename(dataset_path).lower()
         dataset_type = "nslkdd" if "kdd" in fname else "cicids2017"
 
-    # Load
+    # ── Preprocessing ─────────────────────────────────────────────────────────
     if dataset_type == "nslkdd":
-        df = pd.read_csv(dataset_path, header=None, names=NSLKDD_COLS)
-        from sklearn.preprocessing import LabelEncoder as LE2
-        for col in ["protocol_type","service","flag"]:
-            df[col] = LE2().fit_transform(df[col].astype(str))
-        X = df[NSLKDD_COLS[:41]].apply(pd.to_numeric, errors="coerce").fillna(0)
-        y = df["label"].str.lower().str.strip().map(NSLKDD_MAP).fillna("Unknown")
+        # Delegate all preprocessing to the dedicated module.
+        # This covers: load → encode categoricals → map labels →
+        # extract features → remove rare classes → train/test split.
+        from app.ml.nslkdd_preprocessor import preprocess
+        prep = preprocess(dataset_path, sample_size=sample_size)
+        X_tr   = prep["X_train"]
+        X_te   = prep["X_test"]
+        y_tr_s = prep["y_train"]   # string labels e.g. "BENIGN", "DoS"
+        y_te_s = prep["y_test"]
+        X      = prep["X_train"]   # used later for feature_importances_ names
     else:
-        import glob
+        import pandas as pd, glob
         files = glob.glob(os.path.join(dataset_path,"*.csv")) if os.path.isdir(dataset_path) else [dataset_path]
         df = pd.concat([pd.read_csv(f,low_memory=False) for f in files], ignore_index=True)
         df.columns = df.columns.str.strip()
         label_col  = next(c for c in df.columns if c.lower()=="label")
         df = df.replace([float("inf"),float("-inf")],float("nan")).dropna()
-        X  = df.select_dtypes(include=[np.number]).drop(columns=[label_col], errors="ignore").fillna(0)
-        y  = df[label_col].str.strip().str.lower().map(CICIDS_MAP).fillna("Unknown")
+        X_all = df.select_dtypes(include=[np.number]).drop(columns=[label_col], errors="ignore").fillna(0)
+        y_all = df[label_col].str.strip().str.lower().map(CICIDS_MAP).fillna("Unknown")
+        if sample_size and len(X_all) > sample_size:
+            idx = X_all.sample(n=sample_size, random_state=42).index
+            X_all, y_all = X_all.loc[idx], y_all.loc[idx]
+        valid  = y_all.value_counts()[y_all.value_counts() >= 5].index
+        X_all  = X_all[y_all.isin(valid)]
+        y_all  = y_all[y_all.isin(valid)]
+        from sklearn.model_selection import train_test_split
+        X_tr, X_te, y_tr_s, y_te_s = train_test_split(
+            X_all, y_all, test_size=0.2, random_state=42, stratify=y_all
+        )
+        X = X_tr
 
-    # Sample
-    if sample_size and len(X) > sample_size:
-        idx = X.sample(n=sample_size, random_state=42).index
-        X, y = X.loc[idx], y.loc[idx]
-
-    # Remove rare classes
-    valid = y.value_counts()[y.value_counts()>=5].index
-    mask  = y.isin(valid)
-    X, y  = X[mask], y[mask]
-
-    le          = LabelEncoder()
-    y_enc       = le.fit_transform(y)
-    X_tr,X_te,y_tr,y_te = train_test_split(X,y_enc,test_size=0.2,random_state=42,stratify=y_enc)
+    # ── Encode string labels → integers for sklearn ───────────────────────────
+    le    = LabelEncoder()
+    y_tr  = le.fit_transform(y_tr_s)
+    y_te  = le.transform(y_te_s)
 
     scaler      = StandardScaler()
     X_tr_s      = scaler.fit_transform(X_tr)
@@ -195,6 +273,34 @@ def train(dataset_path: str, dataset_type: str = "auto",
 
     top10 = sorted(zip(X.columns.tolist(), clf.feature_importances_),
                    key=lambda x:x[1], reverse=True)[:10]
+
+    # ── Save evaluation report to disk ────────────────────────────────────────
+    # Persists training results so GET /ml/status can return them without
+    # reloading the model, and so the mentor can review offline.
+    evaluation = {
+        "trained_at":      datetime.now(timezone.utc).isoformat(),
+        "dataset_type":    dataset_type,
+        "dataset_path":    dataset_path,
+        "total_samples":   len(X),
+        "train_samples":   len(X_tr),
+        "test_samples":    len(X_te),
+        "accuracy":        round(float(accuracy), 4),
+        "classes":         le.classes_.tolist(),
+        "n_features":      int(clf.n_features_in_),
+        "feature_names":   X.columns.tolist(),
+        "top_features":    [(f, round(float(i), 4)) for f, i in top10],
+        "classification_report": report,
+    }
+    try:
+        with open(EVAL_PATH, "w") as f:
+            json.dump(evaluation, f, indent=2)
+        logger.info(
+            "RF trained — accuracy=%.4f classes=%s eval saved to %s",
+            accuracy, le.classes_.tolist(), EVAL_PATH
+        )
+    except Exception as e:
+        # Non-fatal: model is saved even if eval JSON write fails
+        logger.warning("Could not save evaluation JSON: %s", e)
 
     return {
         "status": "trained", "dataset_type": dataset_type,
@@ -219,12 +325,12 @@ def predict(event: Dict) -> Dict:
         clf    = joblib.load(CLF_PATH)
         scaler = joblib.load(SCALER_PATH)
         le     = joblib.load(ENCODER_PATH)
-        feats  = extract_live_features(event)
-        n_tr   = clf.n_features_in_
-        if len(feats) < n_tr:
-            feats = feats + [0.0]*(n_tr-len(feats))
-        else:
-            feats = feats[:n_tr]
+        feats = extract_live_features(event)   # always N_LIVE_FEATURES (14)
+        n_tr  = clf.n_features_in_
+        # Guard against stale model files trained on a different feature count
+        if len(feats) != n_tr:
+            logger.warning("Feature mismatch: model=%d live=%d", n_tr, len(feats))
+            feats = (feats + [0.0] * n_tr)[:n_tr]
         X         = np.array([feats])
         X_sc      = scaler.transform(X)
         pred_int  = clf.predict(X_sc)[0]
@@ -263,4 +369,19 @@ def status() -> Dict:
                          "model_size_kb":round(os.path.getsize(CLF_PATH)/1024,1)})
         except Exception as e:
             info["error"] = str(e)
+    # Attach last evaluation report if it exists
+    if os.path.exists(EVAL_PATH):
+        try:
+            with open(EVAL_PATH) as f:
+                eval_data = json.load(f)
+            info["last_evaluation"] = {
+                "trained_at": eval_data.get("trained_at"),
+                "accuracy":   eval_data.get("accuracy"),
+                "classes":    eval_data.get("classes"),
+                "total_samples": eval_data.get("total_samples"),
+                "dataset_type":  eval_data.get("dataset_type"),
+                "top_features":  eval_data.get("top_features", [])[:5],
+            }
+        except Exception as e:
+            info["evaluation_error"] = str(e)
     return info

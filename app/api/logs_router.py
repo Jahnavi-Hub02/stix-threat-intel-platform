@@ -178,3 +178,183 @@ def ioc_health(user: dict = Depends(verify_token)):
     """
     from app.ingestion.ioc_manager import ioc_health_summary
     return ioc_health_summary()
+
+
+# ── WebSocket: /logs/stream ───────────────────────────────────────────────────
+# Mentor requirement: check a log stream (online) against stored IOCs.
+#
+# Two usage modes:
+#
+#   MODE A — Tail a server-side file (filepath query param):
+#     ws://host/logs/stream?filepath=/var/log/app.log&token=<jwt>
+#     Server tails the file and pushes each IOC hit as a JSON message.
+#
+#   MODE B — Client pushes lines in real time (no filepath):
+#     ws://host/logs/stream?token=<jwt>
+#     Client sends log lines as text messages; server checks each line
+#     against IOCs and pushes back any hits as JSON messages.
+#     Send "CLOSE" to end the session cleanly.
+
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+import json as _json
+
+
+def _auth_ws(token: str) -> dict:
+    """Validate JWT for WebSocket connections (token passed as query param)."""
+    from app.auth.security import verify_token_string
+    return verify_token_string(token)
+
+
+@router.websocket("/stream")
+async def stream_log_ws(
+    websocket: WebSocket,
+    filepath:  Optional[str] = None,
+    token:     str            = "",
+):
+    """
+    WebSocket endpoint for real-time log stream analysis (Module 1 — IOC check).
+
+    MODE A — server tails a file (pass filepath query param):
+      Connects and immediately begins tailing filepath.
+      Every new line is checked against the IOC database.
+      Only lines that produce an IOC hit are sent back as JSON.
+      Send any message to the server to stop tailing gracefully.
+
+    MODE B — client streams lines (no filepath):
+      Send log lines one at a time as text messages.
+      Server checks each line and immediately replies with:
+        - {"hit": true,  ...hit_dict}  if the line matches an IOC
+        - {"hit": false, "line_number": N}  if the line is clean
+      Send "CLOSE" to end the session.
+
+    Authentication: pass token=<jwt> as a query param.
+    """
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    try:
+        _auth_ws(token)
+    except Exception:
+        await websocket.close(code=4001, reason="Unauthorized: invalid or missing token")
+        return
+
+    await websocket.accept()
+
+    # ── MODE A: tail a server-side file ──────────────────────────────────────
+    if filepath:
+        import os
+        if not os.path.exists(filepath):
+            await websocket.send_json({
+                "type":    "error",
+                "message": f"File not found: {filepath}",
+            })
+            await websocket.close()
+            return
+
+        await websocket.send_json({
+            "type":     "connected",
+            "mode":     "file_tail",
+            "filepath": filepath,
+            "message":  f"Tailing {filepath}. IOC hits will appear below.",
+        })
+
+        from app.ingestion.log_checker import _check_line
+        import time
+
+        line_num = 0
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)          # seek to end — only tail new lines
+                while True:
+                    line = f.readline()
+                    if not line:
+                        # No new data — yield to event loop, then poll again
+                        await asyncio.sleep(0.3)
+                        # Check if client sent a stop signal
+                        try:
+                            msg = await asyncio.wait_for(
+                                websocket.receive_text(), timeout=0.01
+                            )
+                            if msg:          # any message from client stops tailing
+                                break
+                        except asyncio.TimeoutError:
+                            pass
+                        continue
+
+                    line_num += 1
+                    hits = _check_line(line, line_num, filepath)
+                    for hit in hits:
+                        await websocket.send_json({
+                            "type":       "ioc_hit",
+                            "line_number": hit["line_number"],
+                            "severity":    hit["severity"],
+                            "matched_ioc": hit["matched_ioc"],
+                            "log_line":    hit["log_line"],
+                            "timestamp":   hit["timestamp"],
+                            "alert":       hit["alert"],
+                        })
+                    # Yield to event loop on every line to keep the WS responsive
+                    await asyncio.sleep(0)
+
+        except WebSocketDisconnect:
+            pass
+        finally:
+            try:
+                await websocket.send_json({"type": "closed", "lines_checked": line_num})
+                await websocket.close()
+            except Exception:
+                pass
+        return
+
+    # ── MODE B: client pushes lines one at a time ─────────────────────────────
+    await websocket.send_json({
+        "type":    "connected",
+        "mode":    "client_stream",
+        "message": "Send log lines as text. Reply will be {hit:true,...} or {hit:false}. Send CLOSE to end.",
+    })
+
+    from app.ingestion.log_checker import _check_line
+
+    line_num = 0
+    try:
+        while True:
+            try:
+                raw_line = await asyncio.wait_for(websocket.receive_text(), timeout=60)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping", "message": "still connected"})
+                continue
+
+            if raw_line.strip().upper() == "CLOSE":
+                await websocket.send_json({
+                    "type":          "closed",
+                    "lines_checked": line_num,
+                })
+                break
+
+            line_num += 1
+            hits = _check_line(raw_line, line_num, "ws-stream")
+
+            if hits:
+                for hit in hits:
+                    await websocket.send_json({
+                        "type":        "ioc_hit",
+                        "hit":         True,
+                        "line_number": hit["line_number"],
+                        "severity":    hit["severity"],
+                        "matched_ioc": hit["matched_ioc"],
+                        "log_line":    hit["log_line"],
+                        "timestamp":   hit["timestamp"],
+                        "alert":       True,
+                    })
+            else:
+                await websocket.send_json({
+                    "hit":         False,
+                    "line_number": line_num,
+                })
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
