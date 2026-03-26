@@ -144,10 +144,11 @@ jobs:
           cache: pip
 
       - name: Install security tools
-        run: pip install safety bandit
+        run: pip install "safety>=3.0" bandit
 
       - name: Check dependencies for known CVEs
-        run: safety check -r requirements.txt --output text
+        # FIX: safety check deprecated in v3.0+ — use safety scan
+        run: safety scan -r requirements.txt
         continue-on-error: true
 
       - name: Static security analysis (bandit)
