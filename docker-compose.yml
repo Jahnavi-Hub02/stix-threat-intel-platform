@@ -1,49 +1,44 @@
 version: "3.9"
 
+# ── STIX Threat Intelligence Platform — Docker Compose ──────────────────────
+# This project uses SQLite (not PostgreSQL). The only services needed are:
+#   backend  → FastAPI on port 8000
+#   frontend → React/Vite on port 5173
+#
+# Usage:
+#   docker-compose up --build          # first run
+#   docker-compose up                  # subsequent runs
+#   docker-compose down                # stop
+
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: stix_postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: stix_platform
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: stix_redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
-  app:
-    build: .
-    container_name: stix_app
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stix_backend
     env_file: .env
-    environment:
-      DATABASE_URL: postgresql://postgres:password@postgres:5432/stix_platform
-      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
     volumes:
       - .:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./database:/app/database
+      - ./models:/app/models
+      - ./reports:/app/reports
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-volumes:
-  postgres_data:
-  redis_data:
+  frontend:
+    image: node:18-alpine
+    container_name: stix_frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host"
+    depends_on:
+      - backend

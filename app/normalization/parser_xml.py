@@ -1,3 +1,12 @@
+"""
+app/normalization/parser_xml.py
+================================
+LEGACY — retained for backward compatibility with static XML sample files.
+
+The mentor-preferred ingestion path is STIX 2.x JSON via taxii2client.
+Use stix_parser.parse_stix_bundle() for all new JSON-format data.
+Use this module ONLY when the source is a STIX 1.x / CybOX XML file.
+"""
 import xml.etree.ElementTree as ET
 import re
 

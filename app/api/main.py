@@ -406,26 +406,40 @@ def list_correlations(
 
 @app.get("/report/{event_id}", tags=["Reports"])
 def download_report(event_id: str, user: dict = Depends(verify_token)):
-    report_path = f"Threat_Report_{event_id}.pdf"
+    # Reports are saved under reports/ by generate_report() — look there first,
+    # then fall back to cwd for backward compatibility with older deployments.
+    report_filename = f"Threat_Report_{event_id}.pdf"
+    report_path     = os.path.join("reports", report_filename)
+    if not os.path.exists(report_path):
+        report_path = report_filename          # cwd fallback
     if not os.path.exists(report_path):
         raise HTTPException(status_code=404,
                             detail=f"Report for '{event_id}' not found.")
     return FileResponse(path=report_path, media_type="application/pdf",
-                        filename=report_path)
+                        filename=report_filename)
 
 
 # ── Protected: Ingestion (analyst+) ───────────────────────────────
 
 @app.post("/manual-ingest", tags=["Ingestion"])
 def manual_ingest(
-    feed_type: str  = Query("json"),
+    feed_type: str  = Query("json", description="'json' (default) or 'both'. XML is legacy."),
     user:      dict = Depends(require_role("analyst")),
 ):
+    """
+    Ingest from local sample data files.
+
+    JSON is the preferred format (STIX 2.x, easier to parse than XML).
+    XML support is retained as a legacy fallback only.
+    For live feeds use POST /ingest/taxii or let the scheduler run.
+    """
     results = {"json": 0, "xml": 0}
     if feed_type in ["json", "both"] and os.path.exists("data/TI_GOV.json"):
         r = insert_indicators(parse_stix_json("data/TI_GOV.json")) or {"stored": 0}
         results["json"] = r.get("stored", 0)
-    if feed_type in ["xml", "both"] and os.path.exists("data/certin_ti_gov.xml"):
+    if feed_type == "both" and os.path.exists("data/certin_ti_gov.xml"):
+        # Legacy XML file — retained for backward compatibility only.
+        # The mentor-preferred approach is TAXII 2.x JSON via /ingest/taxii.
         r = insert_indicators(parse_stix_xml("data/certin_ti_gov.xml")) or {"stored": 0}
         results["xml"] = r.get("stored", 0)
     return {"timestamp": _now(), "ingestion_results": results}
