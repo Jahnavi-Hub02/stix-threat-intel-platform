@@ -86,10 +86,18 @@ def create_tables():
         risk_score   REAL DEFAULT 0.0,
         severity     TEXT DEFAULT 'Low',
         mitre_tactic TEXT,
+        source_ip    TEXT,
         detected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(event_id, matched_ip, match_type)
     )
     """)
+
+    # Migration: add source_ip to existing databases
+    try:
+        cursor.execute("ALTER TABLE correlation_results ADD COLUMN source_ip TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ingestion_logs (
@@ -325,8 +333,9 @@ def save_event(event: dict) -> bool:
         return False
     cursor.execute("""
         INSERT INTO event_logs
-        (event_id, source_ip, destination_ip, source_port, destination_port, protocol, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (event_id, source_ip, destination_ip, source_port, destination_port,
+         protocol, timestamp, submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         event["event_id"],
         event.get("source_ip"),
@@ -334,7 +343,8 @@ def save_event(event: dict) -> bool:
         event.get("source_port"),
         event.get("destination_port"),
         event.get("protocol"),
-        event.get("timestamp", _now())
+        event.get("timestamp", _now()),
+        _now(),
     ))
     conn.commit()
     conn.close()

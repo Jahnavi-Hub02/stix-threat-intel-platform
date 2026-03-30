@@ -21,9 +21,14 @@ MITRE_MAPPING = {
 }
 
 # IOC type weights for risk scoring
+# Keys cover both the DB-stored shorthand (ipv4, domain) and STIX format (ipv4-addr)
 IOC_TYPE_WEIGHTS = {
-    "ipv4": 1.0, "domain": 0.9, "url": 0.85,
-    "md5": 0.95, "sha256": 1.0, "unknown": 0.5
+    "ipv4": 1.0, "ipv4-addr": 1.0,
+    "domain": 0.9, "domain-name": 0.9,
+    "url": 0.85,
+    "md5": 0.95, "file-hash": 0.95,
+    "sha256": 1.0,
+    "unknown": 0.5,
 }
 
 
@@ -106,15 +111,17 @@ def correlate_event(event: dict) -> list:
     for r in results:
         try:
             cursor.execute("""
-                INSERT INTO correlation_results
-                (event_id, matched_ip, match_type, decision, risk_score, severity, mitre_tactic)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO correlation_results
+                (event_id, matched_ip, match_type, decision,
+                 risk_score, severity, mitre_tactic, source_ip)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 r["event_id"], r["matched_ip"], r["match_type"],
-                r["decision"], r["risk_score"], r["severity"], r["mitre_tactic"]
+                r["decision"], r["risk_score"], r["severity"],
+                r["mitre_tactic"], event.get("source_ip"),
             ))
-        except Exception:
-            logger.info("Duplicate correlation skipped", ip=r["matched_ip"], event=r["event_id"])
+        except Exception as e:
+            logger.debug("Correlation insert skipped: %s", e)
 
     cursor.execute(
         "UPDATE event_logs SET is_processed = 1 WHERE event_id = ?",

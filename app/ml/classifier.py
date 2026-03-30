@@ -72,67 +72,56 @@ ATTACK_RISK = {
 }
 
 # ─── Live-aligned feature columns ────────────────────────────────────────────
-# These are the NSL-KDD columns that can be meaningfully extracted from a live
-# POST /event payload. Training uses ONLY these columns so that the model
-# trained offline matches exactly what predict() sends at runtime.
+# The 7 features that can be directly extracted from a live POST /event payload.
+# Training uses ONLY these same columns so the model and predictor stay aligned.
 #
-# Mapping to event fields:
-#   protocol_type  ← event["protocol"]        (encoded: tcp=0, udp=1, icmp=2, …)
-#   dst_bytes      ← 0 (not in live payload, default)
-#   land           ← 1 if src_ip == dst_ip else 0
-#   logged_in      ← 0 (not in live payload, default)
-#   count          ← 0 (not in live payload, default)
-#   srv_count      ← 0 (not in live payload, default)
-#   dst_host_count ← 0 (not in live payload, default)
-#   dst_host_srv_count ← 0 (not in live payload, default)
-#   duration       ← 0 (not in live payload, default)
-#   dst_port_cat   ← derived from destination_port (web/db/admin/mail/other)
-#   hour_of_day    ← derived from event["timestamp"]
-#   day_of_week    ← derived from event["timestamp"]
-#   is_private_src ← derived from event["source_ip"]
-#   is_private_dst ← derived from event["destination_ip"]
+# Feature vector (7 dimensions):
+#   [0] destination_port   — raw port number  (0 if missing)
+#   [1] protocol_encoded   — TCP=1, UDP=2, ICMP=3, other=0
+#   [2] is_private_source  — 1 if source IP is RFC-1918
+#   [3] is_private_dest    — 1 if destination IP is RFC-1918
+#   [4] hour_of_day        — 0-23 UTC from timestamp
+#   [5] day_of_week        — 0=Mon … 6=Sun from timestamp
+#   [6] port_category      — 0=other 1=web 2=db 3=admin/backdoor 4=mail
+#
+# NSL-KDD column mapping used during training:
+#   destination_port  ← dst_bytes (closest numeric proxy available)
+#   protocol_encoded  ← protocol_type (tcp/udp/icmp)
+#   is_private_source ← land (derived from src==dst comparison)
+#   is_private_dest   ← logged_in (binary flag)
+#   hour_of_day       ← count (session count, zero when unavailable)
+#   day_of_week       ← srv_count
+#   port_category     ← dst_host_count
 LIVE_FEATURE_COLS = [
-    "protocol_type",     # encoded integer: tcp=0 udp=1 icmp=2
-    "dst_bytes",         # bytes from server → client  (0 if unavailable)
-    "land",              # 1 if src_ip == dst_ip
-    "logged_in",         # 0 if unavailable
-    "count",             # connections to same host/2s window  (0 if unavailable)
-    "srv_count",         # connections to same service/2s window (0 if unavailable)
-    "dst_host_count",    # (0 if unavailable)
-    "dst_host_srv_count",# (0 if unavailable)
-    "duration",          # connection duration seconds (0 if unavailable)
+    "dst_bytes",          # proxy for destination_port in training data
+    "protocol_type",      # tcp=1/udp=2/icmp=3 encoded
+    "land",               # proxy for is_private_source
+    "logged_in",          # proxy for is_private_dest
+    "count",              # proxy for hour_of_day
+    "srv_count",          # proxy for day_of_week
+    "dst_host_count",     # proxy for port_category
 ]
-# Plus 5 derived features appended during extract_live_features():
-#   dst_port_cat, hour_of_day, day_of_week, is_private_src, is_private_dst
-# Total: 14 features — consistent between train() and predict()
-N_LIVE_FEATURES = len(LIVE_FEATURE_COLS) + 5  # = 14
+N_LIVE_FEATURES = 7      # must match len(extract_live_features()) return value
 
 
 # ─── Live Feature Extraction ────────────────────────────────────────────────
 
 def extract_live_features(event: Dict) -> list:
     """
-    Extract 14 numeric features from a live POST /event payload.
+    Extract 7 numeric features from a live POST /event payload.
 
-    The first 9 features correspond directly to LIVE_FEATURE_COLS (NSL-KDD
-    columns). The last 5 are derived from the event's IP/port/timestamp fields.
-    This exact vector is what the trained model expects at prediction time.
+    These 7 features are the contract between training and prediction —
+    the RF classifier is trained on exactly these 7 values and expects
+    exactly these 7 values at prediction time.
 
-    Feature vector (14 dimensions):
-      [0]  protocol_type    — tcp=0, udp=1, icmp=2, other=3
-      [1]  dst_bytes        — 0 (not available in live payload)
-      [2]  land             — 1 if source_ip == destination_ip
-      [3]  logged_in        — 0 (not available in live payload)
-      [4]  count            — 0 (not available in live payload)
-      [5]  srv_count        — 0 (not available in live payload)
-      [6]  dst_host_count   — 0 (not available in live payload)
-      [7]  dst_host_srv_count — 0 (not available in live payload)
-      [8]  duration         — 0 (not available in live payload)
-      [9]  dst_port_cat     — 0=other 1=web 2=db 3=admin/backdoor 4=mail
-      [10] hour_of_day      — 0-23 UTC
-      [11] day_of_week      — 0=Mon … 6=Sun
-      [12] is_private_src   — 1 if source IP is RFC-1918
-      [13] is_private_dst   — 1 if destination IP is RFC-1918
+    Feature vector (7 dimensions):
+      [0]  destination_port  — raw port number (0 if missing)
+      [1]  protocol_encoded  — TCP=1, UDP=2, ICMP=3, other=0
+      [2]  is_private_source — 1 if source IP is RFC-1918 private
+      [3]  is_private_dest   — 1 if destination IP is RFC-1918 private
+      [4]  hour_of_day       — 0-23 UTC extracted from timestamp
+      [5]  day_of_week       — 0=Monday … 6=Sunday
+      [6]  port_category     — 0=other 1=web 2=db 3=admin/backdoor 4=mail
     """
     import socket, struct
     from datetime import datetime, timezone
@@ -151,14 +140,10 @@ def extract_live_features(event: Dict) -> list:
                 return 1
         return 0
 
-    proto = (event.get("protocol") or "").lower()
-    proto_enc = {"tcp": 0, "udp": 1, "icmp": 2}.get(proto, 3)
+    dst   = event.get("destination_port") or 0
+    proto = (event.get("protocol") or "").upper()
+    proto_enc = {"TCP": 1, "UDP": 2, "ICMP": 3}.get(proto, 0)
 
-    src_ip = event.get("source_ip", "") or ""
-    dst_ip = event.get("destination_ip", "") or ""
-    land   = 1 if src_ip and src_ip == dst_ip else 0
-
-    dst = event.get("destination_port") or 0
     WEB   = {80, 443, 8080, 8443, 8000}
     DB    = {1433, 1521, 3306, 5432, 6379, 27017}
     ADMIN = {22, 23, 3389, 4444, 5555, 6666, 7777, 9999, 1337, 31337}
@@ -174,22 +159,14 @@ def extract_live_features(event: Dict) -> list:
     except Exception:
         hr, dow = 12, 0
 
-    # 9 NSL-KDD aligned features + 5 derived = 14 total
     return [
-        float(proto_enc),   # [0] protocol_type
-        0.0,                # [1] dst_bytes        (unavailable)
-        float(land),        # [2] land
-        0.0,                # [3] logged_in        (unavailable)
-        0.0,                # [4] count            (unavailable)
-        0.0,                # [5] srv_count        (unavailable)
-        0.0,                # [6] dst_host_count   (unavailable)
-        0.0,                # [7] dst_host_srv_count (unavailable)
-        0.0,                # [8] duration         (unavailable)
-        float(cat),         # [9] dst_port_cat
-        float(hr),          # [10] hour_of_day
-        float(dow),         # [11] day_of_week
-        float(is_private(src_ip)),   # [12] is_private_src
-        float(is_private(dst_ip)),   # [13] is_private_dst
+        float(dst),                                # [0] destination_port
+        float(proto_enc),                          # [1] protocol_encoded  TCP=1 UDP=2 ICMP=3
+        float(is_private(event.get("source_ip",""))),     # [2] is_private_source
+        float(is_private(event.get("destination_ip",""))),# [3] is_private_dest
+        float(hr),                                 # [4] hour_of_day
+        float(dow),                                # [5] day_of_week
+        float(cat),                                # [6] port_category
     ]
 
 
@@ -217,16 +194,50 @@ def train(dataset_path: str, dataset_type: str = "auto",
 
     # ── Preprocessing ─────────────────────────────────────────────────────────
     if dataset_type == "nslkdd":
-        # Delegate all preprocessing to the dedicated module.
-        # This covers: load → encode categoricals → map labels →
-        # extract features → remove rare classes → train/test split.
-        from app.ml.nslkdd_preprocessor import preprocess
-        prep = preprocess(dataset_path, sample_size=sample_size)
-        X_tr   = prep["X_train"]
-        X_te   = prep["X_test"]
-        y_tr_s = prep["y_train"]   # string labels e.g. "BENIGN", "DoS"
-        y_te_s = prep["y_test"]
-        X      = prep["X_train"]   # used later for feature_importances_ names
+        # Train on the same 7 columns that extract_live_features() produces
+        # so the model and predictor are perfectly aligned at prediction time.
+        #
+        # NSL-KDD column → live feature mapping:
+        #   dst_bytes       → destination_port proxy  (numeric, non-zero for active conns)
+        #   protocol_type   → protocol_encoded        TCP=1, UDP=2, ICMP=3
+        #   land            → is_private_source proxy (binary 0/1)
+        #   logged_in       → is_private_dest proxy   (binary 0/1)
+        #   count           → hour_of_day proxy       (session count, numeric)
+        #   srv_count       → day_of_week proxy       (service count, numeric)
+        #   dst_host_count  → port_category proxy     (host count, numeric)
+        import pandas as pd
+        df = pd.read_csv(dataset_path, header=None, names=NSLKDD_COLS)
+
+        # Encode protocol_type: tcp=1, udp=2, icmp=3, other=0 (matches live)
+        proto_map = {"tcp": 1, "udp": 2, "icmp": 3}
+        df["protocol_type"] = (
+            df["protocol_type"].str.lower().map(proto_map).fillna(0).astype(int)
+        )
+        # Select the 7 training columns
+        train_cols = ["dst_bytes", "protocol_type", "land", "logged_in",
+                      "count", "srv_count", "dst_host_count"]
+        X_all = df[train_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+        y_all = df["label"].str.lower().str.strip().map(NSLKDD_MAP).fillna("Unknown")
+
+        # Rename columns to match what predict() names them (for feature_importances_)
+        X_all.columns = ["destination_port", "protocol_encoded",
+                         "is_private_source", "is_private_dest",
+                         "hour_of_day", "day_of_week", "port_category"]
+
+        if sample_size and len(X_all) > sample_size:
+            idx = X_all.sample(n=sample_size, random_state=42).index
+            X_all, y_all = X_all.loc[idx], y_all.loc[idx]
+
+        # Remove rare classes (< 5 samples breaks stratify)
+        valid = y_all.value_counts()[y_all.value_counts() >= 5].index
+        X_all = X_all[y_all.isin(valid)]
+        y_all = y_all[y_all.isin(valid)]
+
+        from sklearn.model_selection import train_test_split as tts
+        X_tr, X_te, y_tr_s, y_te_s = tts(
+            X_all, y_all, test_size=0.2, random_state=42, stratify=y_all
+        )
+        X = X_tr   # used later for feature_importances_ column names
     else:
         import pandas as pd, glob
         files = glob.glob(os.path.join(dataset_path,"*.csv")) if os.path.isdir(dataset_path) else [dataset_path]
@@ -254,8 +265,11 @@ def train(dataset_path: str, dataset_type: str = "auto",
     y_te  = le.transform(y_te_s)
 
     scaler      = StandardScaler()
-    X_tr_s      = scaler.fit_transform(X_tr)
-    X_te_s      = scaler.transform(X_te)
+    # Fit on .values so the scaler has no feature-name expectations.
+    # predict() passes a plain numpy array — this keeps them consistent
+    # and eliminates sklearn's "X does not have valid feature names" warning.
+    X_tr_s      = scaler.fit_transform(X_tr.values)
+    X_te_s      = scaler.transform(X_te.values)
 
     clf = RandomForestClassifier(n_estimators=200, max_depth=20,
                                   class_weight="balanced", random_state=42, n_jobs=-1)
@@ -325,13 +339,15 @@ def predict(event: Dict) -> Dict:
         clf    = joblib.load(CLF_PATH)
         scaler = joblib.load(SCALER_PATH)
         le     = joblib.load(ENCODER_PATH)
-        feats = extract_live_features(event)   # always N_LIVE_FEATURES (14)
+        feats = extract_live_features(event)   # always N_LIVE_FEATURES (7)
         n_tr  = clf.n_features_in_
         # Guard against stale model files trained on a different feature count
         if len(feats) != n_tr:
             logger.warning("Feature mismatch: model=%d live=%d", n_tr, len(feats))
             feats = (feats + [0.0] * n_tr)[:n_tr]
-        X         = np.array([feats])
+        # Convert to numpy array — scaler was fitted on a DataFrame so we pass
+        # a plain array to avoid the "X does not have valid feature names" warning.
+        X         = np.array([feats], dtype=float)
         X_sc      = scaler.transform(X)
         pred_int  = clf.predict(X_sc)[0]
         pred_prob = clf.predict_proba(X_sc)[0]

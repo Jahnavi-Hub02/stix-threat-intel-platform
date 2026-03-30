@@ -32,10 +32,13 @@ APScheduler==3.10.4
 pydantic==2.7.1
 
 # ── HTTP ──────────────────────────────────────────────────
-# requests 2.32.x is compatible with urllib3 2.x.
-# Earlier versions produce a RequestsDependencyWarning in tests.
+# requests 2.32.3 + urllib3 2.2.x + chardet 5.x are the compatible set.
+# urllib3 >=2.3 and chardet >=6 cause RequestsDependencyWarning in tests.
+# If your venv shows the warning, run:
+#   pip install urllib3==2.2.3 chardet==5.2.0
 requests==2.32.3
-urllib3>=2.2.0,<3.0.0
+urllib3==2.2.3
+chardet==5.2.0
 
 # ── PDF Reports ────────────────────────────────────────────
 reportlab==4.2.0
@@ -45,7 +48,7 @@ lxml==5.2.2
 
 # ── Auth ──────────────────────────────────────────────────
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.9
+python-multipart>=0.0.12
 
 # ── JWT Authentication ─────────────────────────────────────
 PyJWT==2.8.0
