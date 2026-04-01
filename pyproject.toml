@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stix-threat-intel-platform"
+version = "2.4.3"
+description = "A tool that watches for cyber threats in real time"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Add from requirements.txt if needed, but keep minimal
+]
+authors = [
+    {name = "Jahnavi-Hub02"},
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 88
+target-version = ['py311']

@@ -150,7 +150,7 @@ app = FastAPI(
         "2. Login: `POST /auth/login` → copy `access_token`\n"
         "3. Click **Authorize** (🔒) and paste: `Bearer <access_token>`"
     ),
-    version="2.4.0",
+    version="2.5.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -182,7 +182,7 @@ app.include_router(logs_router)    # /logs/*
 def root():
     return {
         "platform":  "STIX 2.1 Threat Intelligence Correlation Platform",
-        "version":   "2.4.0",
+        "version":   "2.5.0",
         "status":    "operational",
         "auth":      "JWT Bearer token required for protected endpoints",
         "docs":      "/docs",
@@ -227,7 +227,11 @@ def list_iocs(
             "ioc_type_filter": ioc_type, "iocs": iocs}
 
 
-
+# ⚠ ROUTE ORDER MATTERS — do NOT move these routes.
+# GET /iocs/health  MUST be registered before GET /iocs/{ioc_value:path}.
+# The :path wildcard matches everything including the literal "health".
+# FastAPI resolves exact routes first when they are registered first.
+# If you reorder these, /iocs/health will be swallowed by the wildcard.
 
 @app.get("/iocs/health", tags=["IOCs"])
 def ioc_health(user: dict = Depends(verify_token)):
@@ -270,7 +274,12 @@ def expire_iocs(
     from app.ingestion.ioc_manager import expire_outdated_iocs
     result = expire_outdated_iocs(max_age_days=max_age_days)
     if "error" in result:
-        raise HTTPException(status_code=500, detail=result["error"])
+        # Log the real error server-side; return a sanitized message to the client.
+        logger.error("expire_outdated_iocs failed: %s", result["error"])
+        raise HTTPException(
+            status_code=500,
+            detail="IOC expiry operation failed. Check server logs for details.",
+        )
     return {
         "status":       "ok",
         "max_age_days": max_age_days,
@@ -293,7 +302,6 @@ def lookup_ioc(ioc_value: str, user: dict = Depends(verify_token)):
     if not row:
         raise HTTPException(status_code=404, detail=f"IOC '{ioc_value}' not found.")
     return {"status": "found", "ioc": dict(row)}
-
 
 
 # ── Protected: Events (analyst+) ──────────────────────────────────

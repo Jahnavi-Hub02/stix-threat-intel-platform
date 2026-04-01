@@ -1,10 +1,28 @@
+name: Deploy to Render
+
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types: [completed]
+    branches: [main]
 
 jobs:
   deploy:
+    name: Trigger Render Deploy
     runs-on: ubuntu-latest
+    # Only deploy if CI passed
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Trigger Render deploy hook
+        run: |
+          echo "Triggering Render deployment..."
+          curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+        # Set RENDER_DEPLOY_HOOK_URL in GitHub repo Settings → Secrets
+        # Get it from: Render dashboard → your service → Settings → Deploy Hook
+
+      - name: Notify deployment triggered
+        run: |
+          echo "✅ Render deployment triggered."
+          echo "Monitor at: https://dashboard.render.com"

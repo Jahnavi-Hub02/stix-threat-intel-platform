@@ -1,3 +1,14 @@
+# ─────────────────────────────────────────────────────────────────
+# STIX 2.1 Threat Intelligence Platform — .gitignore
+# ─────────────────────────────────────────────────────────────────
+
+# ── Environment & Secrets ─────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+# Keep the template — never the real secrets file
+!.env.example
+
 # ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -8,59 +19,71 @@ build/
 dist/
 *.egg-info/
 .eggs/
-*.egg
 pip-wheel-metadata/
-
-# ── Virtual Environments ──────────────────────────────────────────
-venv/
-env/
-.venv/
-ENV/
-
-# ── Environment & Secrets ─────────────────────────────────────────
-.env
-.env.*
-!.env.example
-*.key
-secrets/
-
-# ── Runtime Data (never commit) ───────────────────────────────────
-database/
-models/
-*.db
-*.sqlite3
-
-# ── Generated Reports (runtime output) ────────────────────────────
-Threat_Report_*.pdf
-reports/
-*.zip
-
-# ── Test Artifacts ────────────────────────────────────────────────
 .pytest_cache/
 .coverage
 coverage.xml
 htmlcov/
-*.prof
+.mypy_cache/
+.ruff_cache/
 
-# ── ML Model Files ────────────────────────────────────────────────
-*.pkl
-*.joblib
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
 
-# ── IDE & OS ──────────────────────────────────────────────────────
-.idea/
+# ── Database (SQLite — generated at runtime) ──────────────────────
+database/*.db
+database/*.db-shm
+database/*.db-wal
+# Keep the directory itself
+!database/.gitkeep
+
+# ── ML Models (generated at runtime by training) ──────────────────
+models/*.pkl
+models/*.joblib
+# Keep the directory
+!models/.gitkeep
+
+# ── Reports (generated per-event) ─────────────────────────────────
+reports/*.pdf
+!reports/.gitkeep
+
+# ── Frontend ──────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Root-level stub package-lock.json (the real one lives in frontend/)
+# This file was accidentally created at the repo root with no packages.
+/package-lock.json
+/node_modules/
+
+# ── Docker ────────────────────────────────────────────────────────
+.dockerignore
+
+# ── IDEs & Editors ────────────────────────────────────────────────
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
 .DS_Store
 Thumbs.db
 
-# ── Node / Frontend ───────────────────────────────────────────────
-node_modules/
-frontend/dist/
-frontend/.env
-npm-debug.log*
-yarn-error.log*
-package-lock.json
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+logs/
 
-# ── Docker ────────────────────────────────────────────────────────
-docker-compose.override.yml
+# ── Dev utility scripts (moved to scripts/ — not meant for root) ──
+# These were at the repo root; they now live in scripts/.
+# Listing here as a safeguard so accidental root copies are ignored.
+/create_clean_zip.py
+/fix_main.py
+/cleanup.py
+/cleanup_now.py
+
+# ── pytest cache ──────────────────────────────────────────────────
+.pytest_cache/
+*.zip

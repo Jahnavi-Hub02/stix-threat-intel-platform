@@ -144,7 +144,7 @@ function LoginScreen({ onLogin }) {
             STIX THREAT INTEL
           </div>
           <div style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--muted)", marginTop:4 }}>
-            v2.3.0 — JWT SECURED
+            v2.5.0 — JWT SECURED
           </div>
         </div>
 
@@ -232,7 +232,7 @@ function TopBar({ live, lastUpdate, onRefresh, loading, user, onLogout }) {
             STIX THREAT INTELLIGENCE
           </div>
           <div style={{ fontFamily:"var(--font-mono)", fontSize:9, color:"var(--muted)", letterSpacing:2 }}>
-            CORRELATION PLATFORM v2.3
+            CORRELATION PLATFORM v2.5.0
           </div>
         </div>
       </div>
@@ -772,7 +772,7 @@ export default function App() {
           background:"var(--surface)",
         }}>
           <span style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--muted)" }}>
-            STIX 2.1 THREAT INTELLIGENCE CORRELATION PLATFORM v2.3.0
+            STIX 2.1 THREAT INTELLIGENCE CORRELATION PLATFORM v2.5.0
           </span>
           <span style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--muted)" }}>
             <span style={{ color:"var(--accent3)", animation:"blink 1.2s infinite" }}>●</span> API: {API}

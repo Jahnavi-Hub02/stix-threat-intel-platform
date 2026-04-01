@@ -1,0 +1,87 @@
+{
+  "trained_at": "2026-04-01T07:52:16.343782+00:00",
+  "dataset_type": "nslkdd",
+  "dataset_path": "C:\\Users\\jaanu\\AppData\\Local\\Temp\\pytest-of-jaanu\\pytest-96\\test_minimal_event_no_crash0\\KDDTrain.txt",
+  "total_samples": 160,
+  "train_samples": 160,
+  "test_samples": 40,
+  "accuracy": 1.0,
+  "classes": [
+    "BENIGN",
+    "DoS",
+    "Probe"
+  ],
+  "n_features": 7,
+  "feature_names": [
+    "destination_port",
+    "protocol_encoded",
+    "is_private_source",
+    "is_private_dest",
+    "hour_of_day",
+    "day_of_week",
+    "port_category"
+  ],
+  "top_features": [
+    [
+      "protocol_encoded",
+      0.8055
+    ],
+    [
+      "day_of_week",
+      0.0521
+    ],
+    [
+      "hour_of_day",
+      0.0494
+    ],
+    [
+      "port_category",
+      0.0472
+    ],
+    [
+      "destination_port",
+      0.0458
+    ],
+    [
+      "is_private_source",
+      0.0
+    ],
+    [
+      "is_private_dest",
+      0.0
+    ]
+  ],
+  "classification_report": {
+    "BENIGN": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 14.0
+    },
+    "DoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 13.0
+    },
+    "Probe": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 13.0
+    },
+    "accuracy": 1.0,
+    "macro avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 40.0
+    },
+    "weighted avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 40.0
+    }
+  }
+}
