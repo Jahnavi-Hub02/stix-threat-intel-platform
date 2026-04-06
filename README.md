@@ -2,9 +2,9 @@
 
 **A tool that watches for cyber threats in real time — ingesting known bad IPs and domains, checking every network event against them, and alerting analysts when something suspicious appears.**
 
-[![Tests](https://img.shields.io/badge/Tests-199%20passed-brightgreen?style=flat-square)](https://github.com/Jahnavi-Hub02/stix-threat-intel-platform/actions)
+[![Tests](https://img.shields.io/badge/Tests-297%20passed-brightgreen?style=flat-square)](https://github.com/Jahnavi-Hub02/stix-threat-intel-platform/actions)
 [![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-2.4.3-orange?style=flat-square)](https://github.com/Jahnavi-Hub02/stix-threat-intel-platform)
+[![Version](https://img.shields.io/badge/Version-2.5.0-orange?style=flat-square)](https://github.com/Jahnavi-Hub02/stix-threat-intel-platform)
 
 ---
 
@@ -46,7 +46,7 @@ How data flows through the platform — from raw threat feeds to analyst alerts:
 
 You need **Python 3.11** and **Node.js 18+** installed.
 
-> Use Python 3.11 specifically — not 3.12 or 3.13. The ML library has compiled files that only work on 3.11.
+> Python 3.11 is recommended and fully tested. Python 3.12 is also supported and tested in CI.
 
 ### 1. Clone the repository
 
@@ -102,7 +102,8 @@ In a second terminal:
 ```bash
 cd frontend
 npm install    # first time only
-npm run dev    # opens http://localhost:3000
+npm run dev    # opens http://localhost:3000 (direct)
+# Note: when running via Docker Compose, the frontend is served on http://localhost:5173
 ```
 
 ### 7. Load threat data
@@ -188,7 +189,7 @@ stix-threat-intel-platform/
 │   ├── database/            ← Reads and writes the SQLite database
 │   └── utils/               ← PDF reports, logging helpers, IP tools
 │
-├── tests/                   ← 199 automated tests (all passing)
+├── tests/                   ← 297 automated tests (all passing)
 ├── frontend/                ← React dashboard (runs separately)
 ├── data/                    ← Bundled STIX feed files (1,074+ indicators)
 ├── requirements.txt         ← Python packages to install
@@ -207,7 +208,7 @@ $env:PYTHONPATH    = "."
 pytest tests/ -v --tb=short
 ```
 
-Expected result: **199 passed, 0 failed**
+Expected result: **297 passed, 0 failed**
 
 ---
 
