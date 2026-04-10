@@ -1,12 +1,19 @@
 import sqlite3
 import os
+import pathlib
 from datetime import datetime, timezone
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Fixed path — tests use monkeypatch to override this, not env vars
-DB_PATH = "database/threat_intel.db"
+# Robust absolute path — resolves to <project_root>/database/threat_intel.db
+# regardless of the current working directory.
+# Tests use monkeypatch to override this, not env vars.
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+DB_PATH = str(_PROJECT_ROOT / "database" / "threat_intel.db")
+
+# Ensure the database directory exists (SQLite only creates the file, not parent dirs)
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
 def _now():
