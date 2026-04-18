@@ -103,7 +103,20 @@ function LoginScreen({ onLogin }) {
           body: JSON.stringify({ username, password, role }),
         });
         const d = await r.json();
-        if (!r.ok) { setError(d.detail || "Registration failed"); return; }
+        if (!r.ok) {
+          // FastAPI 422 validation errors return d.detail as an array of objects.
+          // Rendering an object directly in JSX crashes with "Objects are not valid
+          // as a React child", so we always coerce to a plain string.
+          let msg = "Registration failed";
+          if (typeof d.detail === "string") {
+            msg = d.detail;
+          } else if (Array.isArray(d.detail) && d.detail.length > 0) {
+            // Each entry looks like: { type, loc, msg, input, ctx }
+            msg = d.detail.map(e => e.msg || String(e)).join("; ");
+          }
+          setError(msg);
+          return;
+        }
         setMode("login"); setError(""); setPassword("");
         return;
       }
@@ -113,7 +126,15 @@ function LoginScreen({ onLogin }) {
         body: JSON.stringify({ username, password }),
       });
       const d = await r.json();
-      if (!r.ok) { setError(d.detail || "Login failed"); return; }
+      if (!r.ok) {
+        const msg = typeof d.detail === "string"
+          ? d.detail
+          : Array.isArray(d.detail) && d.detail.length > 0
+            ? d.detail.map(e => e.msg || String(e)).join("; ")
+            : "Login failed";
+        setError(msg);
+        return;
+      }
       setToken(d.access_token);
       onLogin({ username: d.username, role: d.role, token: d.access_token });
     } catch {
