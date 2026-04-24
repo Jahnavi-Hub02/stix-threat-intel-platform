@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import pathlib
+import time
 from datetime import datetime, timezone
 from app.utils.logger import get_logger
 
@@ -18,6 +19,21 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _retry_db_write(func):
+    """Retry transient SQLite lock errors with exponential backoff."""
+    def wrapper(*args, **kwargs):
+        for attempt in range(5):
+            try:
+                return func(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    raise
+                if attempt == 4:
+                    raise
+                time.sleep(0.1 * (2 ** attempt))
+    return wrapper
 
 
 def create_connection():
@@ -280,16 +296,26 @@ def insert_indicators(indicators, source_label="Unknown"):
         VALUES (?, 'running', ?)
     """, (source_label, now))
     log_id = cursor.lastrowid
+    conn.commit()  # commit the log row early so the write lock is released sooner
+    batch_count = 0
 
     for ind in indicators:
-        cursor.execute(
-            "SELECT id FROM ioc_indicators WHERE ioc_value = ?",
-            (ind["ioc_value"],)
-        )
-        if cursor.fetchone():
+        stix_id = ind.get("stix_id")
+        if not stix_id or stix_id == "unknown":
+            stix_id = None
+
+        query = "SELECT id FROM ioc_indicators WHERE ioc_value = ?"
+        params = [ind["ioc_value"]]
+        if stix_id is not None:
+            query += " OR stix_id = ?"
+            params.append(stix_id)
+
+        cursor.execute(query, params)
+        existing = cursor.fetchone()
+        if existing:
             cursor.execute(
-                "UPDATE ioc_indicators SET last_seen = ? WHERE ioc_value = ?",
-                (now, ind["ioc_value"])
+                "UPDATE ioc_indicators SET last_seen = ? WHERE id = ?",
+                (now, existing["id"])
             )
             total_duplicates += 1
         else:
@@ -303,7 +329,7 @@ def insert_indicators(indicators, source_label="Unknown"):
                  confidence, severity, source, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                ind.get("stix_id", "unknown"),
+                stix_id,
                 ind.get("ioc_type", "unknown"),
                 ind.get("ioc_subtype", ""),
                 ind["ioc_value"],
@@ -313,6 +339,10 @@ def insert_indicators(indicators, source_label="Unknown"):
                 now, now
             ))
             total_stored += 1
+
+        batch_count += 1
+        if batch_count % 50 == 0:
+            conn.commit()
 
     cursor.execute("""
         UPDATE ingestion_logs SET
@@ -514,6 +544,7 @@ def deactivate_user(user_id: int) -> bool:
 
 # ── Refresh Token Management ──────────────────────────────────────
 
+@_retry_db_write
 def store_refresh_token(jti: str, user_id: int, expires_at: str) -> None:
     conn = create_connection()
     conn.execute(
@@ -544,6 +575,7 @@ def is_refresh_token_valid(jti: str) -> bool:
     return True
 
 
+@_retry_db_write
 def revoke_refresh_token(jti: str) -> None:
     conn = create_connection()
     conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE jti = ?", (jti,))
@@ -551,6 +583,7 @@ def revoke_refresh_token(jti: str) -> None:
     conn.close()
 
 
+@_retry_db_write
 def revoke_all_user_tokens(user_id: int) -> None:
     conn = create_connection()
     conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))

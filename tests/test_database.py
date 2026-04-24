@@ -64,6 +64,34 @@ class TestInsertIndicators:
         assert r2["stored"] == 0
         assert r2["duplicates"] == 1
 
+    def test_missing_stix_id_allows_multiple_iocs(self, temp_db):
+        """Indicators without stix_id should still insert if ioc_value differs."""
+        from app.database.db_manager import insert_indicators, get_all_iocs
+        iocs = [
+            {"ioc_type":"ipv4","ioc_subtype":"network",
+             "ioc_value":"1.2.3.4","confidence":80,"source":"Test"},
+            {"ioc_type":"domain","ioc_subtype":"network",
+             "ioc_value":"example.com","confidence":70,"source":"Test"},
+        ]
+        result = insert_indicators(iocs)
+        assert result["stored"] == 2
+        assert result["duplicates"] == 0
+        stored = get_all_iocs()
+        assert len(stored) == 2
+        assert all(i["stix_id"] is None for i in stored)
+
+    def test_duplicate_stix_id_is_detected(self, temp_db):
+        """The same stix_id with a different ioc_value should be treated as duplicate."""
+        from app.database.db_manager import insert_indicators
+        first = [{"stix_id":"s1","ioc_type":"ipv4","ioc_subtype":"network",
+                  "ioc_value":"1.2.3.4","confidence":80,"source":"Test"}]
+        second = [{"stix_id":"s1","ioc_type":"ipv4","ioc_subtype":"network",
+                   "ioc_value":"1.2.3.5","confidence":80,"source":"Test"}]
+        insert_indicators(first)
+        result = insert_indicators(second)
+        assert result["stored"] == 0
+        assert result["duplicates"] == 1
+
     def test_multiple_types(self, temp_db):
         """Should correctly store all IOC types."""
         from app.database.db_manager import insert_indicators, get_all_iocs
