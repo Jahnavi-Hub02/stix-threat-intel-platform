@@ -5,6 +5,12 @@ import os
 import sys
 import pytest
 
+# ── Must be set BEFORE any app modules are imported ───────────────────────────
+# security.py reads JWT_SECRET_KEY at import time. Set a fixed test key so
+# tests never depend on a .env file and the RuntimeError guard is not triggered.
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-do-not-use-in-production")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

@@ -161,7 +161,27 @@ class AnomalyDetector:
             return {"status":"insufficient_data","sample_count":n,
                     "required":MIN_TRAIN_SAMPLES}
         try:
-            X       = np.array(features, dtype=float)
+            X = np.array(features, dtype=float)
+
+            # Guard against the sklearn '2D array required' crash seen in
+            # mentor demo (screenshot). Happens when:
+            #   - features is []   → shape (0,)   1D empty array
+            #   - features is [[]] → shape (1, 0)  zero columns
+            # Both mean there is no usable training data.
+            if X.ndim == 1:
+                X = X.reshape(-1, 1)   # unexpected 1D — safe reshape
+            if X.shape[0] == 0 or (X.ndim > 1 and X.shape[1] == 0):
+                return {
+                    "status":  "error",
+                    "message": (
+                        "No valid training features. "
+                        "Submit at least one event via POST /event "
+                        "before force-training the Isolation Forest model."
+                    ),
+                    "sample_count": 0,
+                    "required": MIN_TRAIN_SAMPLES,
+                }
+
             scaler  = StandardScaler()
             X_sc    = scaler.fit_transform(X)
             model   = IsolationForest(n_estimators=200, contamination=CONTAMINATION,
@@ -176,6 +196,7 @@ class AnomalyDetector:
             return {"status":"trained","sample_count":n,"contamination":CONTAMINATION}
         except Exception as e:
             return {"status":"error","message":str(e)}
+
 
     def analyze(self, event: Dict) -> Dict:
         event_id = event.get("event_id","unknown")

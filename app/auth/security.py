@@ -28,7 +28,22 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ── Configuration (override via environment variables) ────────────
-SECRET_KEY         = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+_raw_secret = os.getenv("JWT_SECRET_KEY")
+if not _raw_secret:
+    # In production a missing secret means every restart invalidates all tokens.
+    # Fail loudly so the misconfiguration is caught immediately.
+    import sys
+    if os.getenv("TESTING") == "1":
+        # Allow test runs without a real secret; use a fixed test key.
+        _raw_secret = "test-secret-key-do-not-use-in-production"
+        logger.warning("JWT_SECRET_KEY not set — using insecure test key (TESTING=1 mode)")
+    else:
+        raise RuntimeError(
+            "JWT_SECRET_KEY environment variable is not set. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\" "
+            "and add it to your .env file."
+        )
+SECRET_KEY         = _raw_secret
 ALGORITHM          = "HS256"
 ACCESS_TOKEN_MINS  = int(os.getenv("JWT_ACCESS_EXPIRE_MINUTES",  "30"))
 REFRESH_TOKEN_DAYS = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS",    "7"))

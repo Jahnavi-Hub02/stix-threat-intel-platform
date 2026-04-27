@@ -2,6 +2,7 @@ import sqlite3
 import os
 import pathlib
 import time
+import functools
 from datetime import datetime, timezone
 from app.utils.logger import get_logger
 
@@ -23,6 +24,7 @@ def _now():
 
 def _retry_db_write(func):
     """Retry transient SQLite lock errors with exponential backoff."""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         for attempt in range(5):
             try:
@@ -82,8 +84,9 @@ def create_tables():
     try:
         cursor.execute("ALTER TABLE ioc_indicators ADD COLUMN severity TEXT DEFAULT 'medium'")
         conn.commit()
+        logger.debug("Migration applied: added severity column to ioc_indicators")
     except Exception:
-        pass  # Column already exists — safe to ignore
+        logger.debug("Migration skip: severity column already exists in ioc_indicators")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS event_logs (
@@ -119,8 +122,9 @@ def create_tables():
     try:
         cursor.execute("ALTER TABLE correlation_results ADD COLUMN source_ip TEXT")
         conn.commit()
+        logger.debug("Migration applied: added source_ip column to correlation_results")
     except Exception:
-        pass  # Column already exists
+        logger.debug("Migration skip: source_ip column already exists in correlation_results")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ingestion_logs (
@@ -313,11 +317,30 @@ def insert_indicators(indicators, source_label="Unknown"):
         cursor.execute(query, params)
         existing = cursor.fetchone()
         if existing:
-            cursor.execute(
-                "UPDATE ioc_indicators SET last_seen = ? WHERE id = ?",
-                (now, existing["id"])
-            )
+            # UPSERT — mentor requirement: for real STIX polling, existing
+            # indicators may have updated confidence/severity over time.
+            # Update all mutable fields, not just last_seen.
+            new_confidence = ind.get("confidence", 50)
+            new_severity   = ind.get("severity") or _severity_from_confidence(new_confidence)
+            cursor.execute("""
+                UPDATE ioc_indicators
+                SET last_seen   = ?,
+                    confidence  = ?,
+                    severity    = ?,
+                    source      = COALESCE(?, source),
+                    ioc_subtype = COALESCE(?, ioc_subtype),
+                    is_active   = 1
+                WHERE id = ?
+            """, (
+                now,
+                new_confidence,
+                new_severity,
+                ind.get("source", source_label) or None,
+                ind.get("ioc_subtype") or None,
+                existing["id"],
+            ))
             total_duplicates += 1
+
         else:
             # FIX: derive severity from confidence if not explicitly provided,
             # so _lookup_ioc can always read a meaningful severity value.
@@ -438,6 +461,10 @@ def get_db_stats():
     critical = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'High'")
     high = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'Medium'")
+    medium = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'Low'")
+    low = cursor.fetchone()[0]
     cursor.execute("""
         SELECT matched_ip, COUNT(*) as hit_count
         FROM correlation_results
@@ -453,15 +480,20 @@ def get_db_stats():
         ml_stats["total_anomalies"] = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM ml_model_runs WHERE status = 'success'")
         ml_stats["model_trained"] = cursor.fetchone()[0] > 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("ML stats tables not yet created: %s", str(e))
 
     conn.close()
     return {
         "total_iocs": total_iocs,
         "total_events": total_events,
         "total_correlations": total_correlations,
-        "severity_breakdown": {"critical": critical, "high": high},
+        "severity_breakdown": {
+            "critical": critical,
+            "high":     high,
+            "medium":   medium,
+            "low":      low,
+        },
         "top_threats": top_threats,
         "ml": ml_stats,
     }

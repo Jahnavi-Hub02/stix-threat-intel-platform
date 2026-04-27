@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ── STIX Threat Intelligence Platform — Docker Compose ──────────────────────
 # This project uses SQLite (not PostgreSQL). The only services needed are:
 #   backend  → FastAPI on port 8000
@@ -20,10 +18,15 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
+      # Only mount directories that need write-access at runtime.
+      # Avoid mounting the entire project root (exposes .env, .git, .venv).
       - ./database:/app/database
       - ./models:/app/models
       - ./reports:/app/reports
+      - ./data:/app/data
+      # Mount source code read-only for hot-reload in development.
+      # Remove this line in production (use COPY in Dockerfile instead).
+      - ./app:/app/app:ro
     command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

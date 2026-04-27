@@ -279,7 +279,7 @@ function TopBar({ live, lastUpdate, onRefresh, loading, user, onLogout }) {
             }}>LOGOUT</button>
           </div>
         )}
-        <button onClick={onRefresh} disabled={loading} style={{
+        <button aria-label="Refresh data" onClick={onRefresh} disabled={loading} style={{
           background:"none", border:"1px solid var(--border)", color:"var(--accent)",
           fontFamily:"var(--font-mono)", fontSize:10, padding:"5px 14px",
           cursor:"pointer", letterSpacing:1, borderRadius:2, transition:"all 0.2s",
@@ -427,9 +427,17 @@ function IOCTable({ iocs }) {
               <td style={{ padding:"9px 12px" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   <div style={{ flex:1, height:4, background:"var(--border)", borderRadius:2, maxWidth:80 }}>
-                    <div style={{ width:`${ioc.confidence||0}%`, height:"100%", background:`var(${sev(ioc.confidence>80?"Critical":ioc.confidence>60?"High":"Medium")})`, borderRadius:2 }}/>
+                    <div style={{
+                      width:`${ioc.confidence ?? 0}%`, height:"100%", borderRadius:2,
+                      background: `var(${sev(
+                        (ioc.confidence ?? 0) >= 80 ? "Critical"
+                        : (ioc.confidence ?? 0) >= 60 ? "High"
+                        : (ioc.confidence ?? 0) >= 40 ? "Medium"
+                        : "Low"
+                      )})`,
+                    }}/>
                   </div>
-                  <span style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--muted)" }}>{ioc.confidence}%</span>
+                  <span style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--muted)" }}>{ioc.confidence ?? 0}%</span>
                 </div>
               </td>
               <td style={{ padding:"9px 12px", color:"var(--muted)", fontFamily:"var(--font-mono)", fontSize:10 }}>{ioc.source}</td>
@@ -458,7 +466,7 @@ function ResultAlert({ result, onClose }) {
           {result.status === "anomaly_detected" && "◈ ANOMALY DETECTED"}
           {result.status === "benign"            && "✓ BENIGN"}
         </span>
-        <button onClick={onClose} style={{ background:"none", border:"none", color:"var(--muted)", cursor:"pointer", fontSize:16 }}>✕</button>
+        <button aria-label="Close alert" onClick={onClose} style={{ background:"none", border:"none", color:"var(--muted)", cursor:"pointer", fontSize:16 }}>✕</button>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:12 }}>
         {[
@@ -567,6 +575,7 @@ export default function App() {
   const [taxiiApiKey, setTaxiiApiKey]   = useState("");
   const [taxiiLoading, setTaxiiLoading] = useState(false);
   const [taxiiResult, setTaxiiResult]   = useState(null);
+  const [mlTrainResult, setMlTrainResult] = useState(null);
 
   const handleLogin = (userData) => {
     setUser(userData);
@@ -596,7 +605,7 @@ export default function App() {
       setLastUpdate(new Date().toISOString());
     } catch { setLive(false); }
     finally { setLoading(false); }
-  }, [iocPage, iocType, user]);
+  }, [iocPage, iocType]);
 
   useEffect(() => { if (user) fetchAll(); }, [fetchAll, user]);
   useEffect(() => {
@@ -662,8 +671,8 @@ export default function App() {
   const severityData = {
     Critical: stats.severity_breakdown?.critical || 0,
     High:     stats.severity_breakdown?.high     || 0,
-    Medium:   correlations.filter(c => c.severity === "Medium").length,
-    Low:      correlations.filter(c => c.severity === "Low").length,
+    Medium:   stats.severity_breakdown?.medium   || 0,
+    Low:      stats.severity_breakdown?.low      || 0,
   };
   const filteredIocs = iocSearch
     ? iocs.filter(i => i.ioc_value?.toLowerCase().includes(iocSearch.toLowerCase()))
@@ -858,16 +867,36 @@ export default function App() {
                     Force-train the model even if below the {mlStatus?.min_train_samples}-event threshold.
                   </div>
                   <button onClick={async () => {
-                    const r = await apiFetch("/ml/train?force=true", { method:"POST" });
-                    const d = await r.json();
-                    alert(`Training result: ${d.status}\n${d.message || JSON.stringify(d)}`);
-                    fetchAll();
+                    setMlTrainResult(null);
+                    try {
+                      const r = await apiFetch("/ml/train?force=true", { method:"POST" });
+                      const d = await r.json();
+                      setMlTrainResult({ ok: r.ok, msg: d.message || d.status || JSON.stringify(d) });
+                      fetchAll();
+                    } catch (err) {
+                      setMlTrainResult({ ok: false, msg: err.message || "Request failed" });
+                    }
                   }} style={{
                     background:"linear-gradient(90deg,rgba(0,212,255,0.15),rgba(0,212,255,0.08))",
                     border:"1px solid var(--accent)", color:"var(--accent)",
                     padding:"10px 24px", fontFamily:"var(--font-head)", fontSize:13,
                     fontWeight:700, letterSpacing:3, cursor:"pointer", borderRadius:3,
                   }}>⟳ FORCE TRAIN MODEL</button>
+                  {mlTrainResult && (
+                    <div style={{
+                      marginTop:14, fontFamily:"var(--font-mono)", fontSize:11, padding:"12px 14px",
+                      borderRadius:4, border:`1px solid ${mlTrainResult.ok ? "rgba(0,255,159,0.3)" : "rgba(255,60,110,0.3)"}`,
+                      background: mlTrainResult.ok ? "rgba(0,255,159,0.06)" : "rgba(255,60,110,0.06)",
+                      color: mlTrainResult.ok ? "var(--low)" : "var(--critical)",
+                      display:"flex", justifyContent:"space-between", alignItems:"center",
+                    }}>
+                      <span>{mlTrainResult.ok ? "✓" : "✕"} {mlTrainResult.msg}</span>
+                      <button aria-label="Dismiss training result" onClick={() => setMlTrainResult(null)} style={{
+                        background:"none", border:"none", color:"var(--muted)",
+                        cursor:"pointer", fontSize:14, marginLeft:12,
+                      }}>✕</button>
+                    </div>
+                  )}
                 </Panel>
               )}
             </div>

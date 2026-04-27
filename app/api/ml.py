@@ -104,8 +104,9 @@ def ml_predict(
         raise HTTPException(status_code=503, detail=f"ML deps not installed: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-    # ── Classifier status endpoint (added for hybrid ML support) ──────────────
+
+
+# ── Classifier endpoints (hybrid ML support) ──────────────────────────────────
 @router.get("/classifier/status")
 def ml_classifier_status(user: dict = Depends(verify_token)):
     """

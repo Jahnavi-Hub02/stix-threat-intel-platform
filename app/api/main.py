@@ -415,10 +415,21 @@ def list_correlations(
 
 @app.get("/report/{event_id}", tags=["Reports"])
 def download_report(event_id: str, user: dict = Depends(verify_token)):
+    # Re-validate event_id here — path traversal must be blocked even on download,
+    # not only at submission time.
+    if not _SAFE_EVENT_ID.match(event_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid event_id: only alphanumeric characters, hyphens, underscores, and dots are allowed.",
+        )
     # Reports are saved under reports/ by generate_report() — look there first,
     # then fall back to cwd for backward compatibility with older deployments.
     report_filename = f"Threat_Report_{event_id}.pdf"
-    report_path     = os.path.join("reports", report_filename)
+    reports_dir     = os.path.abspath("reports")
+    report_path     = os.path.join(reports_dir, report_filename)
+    # Ensure the resolved path stays inside reports/ (extra safety belt)
+    if not os.path.abspath(report_path).startswith(reports_dir):
+        raise HTTPException(status_code=400, detail="Invalid report path.")
     if not os.path.exists(report_path):
         report_path = report_filename          # cwd fallback
     if not os.path.exists(report_path):
@@ -459,14 +470,23 @@ def ingest_from_file(
     request: FileIngestRequest,
     user:    dict = Depends(require_role("analyst")),
 ):
-    if not os.path.exists(request.file_path):
+    # Security: restrict ingestion to the data/ directory only.
+    # This blocks SSRF-style attacks where an analyst passes /etc/passwd etc.
+    safe_root = os.path.abspath("data")
+    abs_path  = os.path.abspath(request.file_path)
+    if not abs_path.startswith(safe_root + os.sep) and abs_path != safe_root:
+        raise HTTPException(
+            status_code=400,
+            detail="file_path must be inside the data/ directory. Absolute paths outside the project are not allowed.",
+        )
+    if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
     file_type = request.file_type.lower()
     if file_type not in ("json", "xml"):
         raise HTTPException(status_code=400, detail="file_type must be 'json' or 'xml'")
     try:
-        inds   = (parse_stix_json(request.file_path) if file_type == "json"
-                  else parse_stix_xml(request.file_path))
+        inds   = (parse_stix_json(abs_path) if file_type == "json"
+                  else parse_stix_xml(abs_path))
         result = insert_indicators(inds) or {"stored": 0, "duplicates": 0}
         return {"timestamp": _now(), "file_path": request.file_path,
                 "file_type": request.file_type, "indicators_extracted": len(inds),
