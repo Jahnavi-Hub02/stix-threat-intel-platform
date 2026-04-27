@@ -84,6 +84,22 @@ class TAXIIFeedClient:
             logger.error("[%s] connect failed: %s", self.name, e)
         return results
 
+    def ingest_all_collections(self, use_delta=True, max_objects=None):
+        """Fetch TAXII indicators from this server and upsert them into the IOC DB."""
+        from datetime import datetime, timezone, timedelta
+        from app.normalization.stix_parser import parse_stix_bundle
+        from app.database.db_manager import insert_indicators
+
+        added_after = (datetime.now(timezone.utc) - timedelta(hours=24)) if use_delta else None
+        raw = self.fetch_all(added_after=added_after, max_per=max_objects or 2000)
+        iocs = parse_stix_bundle({"objects": raw})
+        for ioc in iocs:
+            ioc["source"] = self.name
+        result = insert_indicators(iocs, source_label=self.name)
+        return {"status": "success", "fetched": len(raw),
+                "stored": result.get("stored", 0),
+                "duplicates": result.get("duplicates", 0)}
+
 
 class MultiFeedIngester:
     def __init__(self):
@@ -98,13 +114,7 @@ class MultiFeedIngester:
         totals  = {"total_fetched":0,"total_stored":0,"total_duplicates":0,"feeds":{},"errors":[]}
         started = datetime.now(timezone.utc)
 
-        # Try to get insert function; fall back gracefully
-        try:
-            import app.database.db_manager as _dbm
-            _insert = getattr(_dbm, "insert_indicators", None) or getattr(_dbm, "insert_ioc", None)
-            _log    = getattr(_dbm, "log_ingestion", None) or getattr(_dbm, "log_ingestion_run", None)
-        except Exception:
-            _insert, _log = None, None
+        from app.database.db_manager import insert_indicators
 
         for cfg in self.feeds:
             name = cfg["name"]
@@ -116,40 +126,13 @@ class MultiFeedIngester:
                 for ioc in iocs:
                     ioc["source"] = name
 
-                # Use create_connection() — always uses the patched DB_PATH in tests
-                now = datetime.now(timezone.utc).isoformat()
-                for ioc in iocs:
-                    ioc_value = ioc.get("ioc_value", "")
-                    if not ioc_value:
-                        continue
-                    try:
-                        conn = create_connection()
-                        cur  = conn.execute(
-                            """INSERT OR IGNORE INTO ioc_indicators
-                               (stix_id, ioc_type, ioc_subtype, ioc_value,
-                                confidence, source, first_seen, last_seen)
-                               VALUES (?,?,?,?,?,?,?,?)""",
-                            (ioc.get("stix_id",""), ioc.get("ioc_type","unknown"),
-                             ioc.get("ioc_subtype",""), ioc_value,
-                             ioc.get("confidence",50), ioc.get("source", name),
-                             now, now)
-                        )
-                        conn.commit()
-                        if cur.rowcount == 1:
-                            res["stored"] += 1
-                        else:
-                            res["duplicates"] += 1
-                        conn.close()
-                    except Exception as e:
-                        res["duplicates"] += 1
-                        logger.debug("IOC insert: %s", e)
-
-                # Also call insert_indicators for ingestion log tracking
-                if iocs and _insert:
-                    try:
-                        _insert(iocs)
-                    except Exception:
-                        pass
+                if iocs:
+                    store_result = insert_indicators(iocs, source_label=name)
+                    res["stored"]     = store_result.get("stored", 0)
+                    res["duplicates"] = store_result.get("duplicates", 0)
+                else:
+                    res["stored"] = 0
+                    res["duplicates"] = 0
 
             except Exception as e:
                 res["status"] = "error"; res["error"] = str(e)
@@ -159,14 +142,6 @@ class MultiFeedIngester:
             totals["total_stored"]     += res["stored"]
             totals["total_duplicates"] += res["duplicates"]
             totals["feeds"][name]       = res
-
-            if _log:
-                try:
-                    _log(source=name, status=res["status"],
-                         total_fetched=res["fetched"], total_stored=res["stored"],
-                         error_message=res.get("error"))
-                except Exception:
-                    pass
 
         totals["elapsed_seconds"] = round(
             (datetime.now(timezone.utc) - started).total_seconds(), 2)

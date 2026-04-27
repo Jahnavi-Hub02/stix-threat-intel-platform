@@ -563,6 +563,10 @@ export default function App() {
   const [tab, setTab]                 = useState("overview");
   const [eventResult, setEventResult] = useState(null);
   const [mlStatus, setMlStatus]       = useState(null);
+  const [taxiiServer, setTaxiiServer]   = useState("https://otx.alienvault.com/taxii/taxii2/");
+  const [taxiiApiKey, setTaxiiApiKey]   = useState("");
+  const [taxiiLoading, setTaxiiLoading] = useState(false);
+  const [taxiiResult, setTaxiiResult]   = useState(null);
 
   const handleLogin = (userData) => {
     setUser(userData);
@@ -600,6 +604,54 @@ export default function App() {
     const t = setInterval(fetchAll, 30000);
     return () => clearInterval(t);
   }, [fetchAll, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const loadServers = async () => {
+      try {
+        const res = await apiFetch("/ingest/servers");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data.servers) && data.servers.length > 0) {
+          const first = data.servers[0];
+          setTaxiiServer(typeof first === "string" ? first : first.url || taxiiServer);
+        }
+      } catch {
+      }
+    };
+    loadServers();
+  }, [user]);
+
+  const triggerTaxiiIngestion = async () => {
+    setTaxiiLoading(true);
+    setTaxiiResult(null);
+    try {
+      const payload = {
+        server_url: taxiiServer,
+        username: "",
+        password: "",
+        api_key: taxiiApiKey || undefined,
+        use_delta: true,
+        max_objects: null,
+        background: false,
+      };
+      const res = await apiFetch("/ingest/taxii", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTaxiiResult({ status: "success", ...data });
+      } else {
+        setTaxiiResult({ status: "error", message: data.detail || data.message || JSON.stringify(data) });
+        if (res.status === 401) { handleLogout(); }
+      }
+    } catch (error) {
+      setTaxiiResult({ status: "error", message: error.message || String(error) });
+    } finally {
+      setTaxiiLoading(false);
+    }
+  };
 
   // Show login screen if not authenticated
   if (!user) {
@@ -698,6 +750,42 @@ export default function App() {
                   Showing {filteredIocs.length} of {stats.total_iocs?.toLocaleString()} IOCs
                 </div>
               </div>
+              {user.role !== "viewer" && (
+                <Panel title="TAXII FEED INGESTION">
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:12, alignItems:"end" }}>
+                    <div style={{ display:"grid", gap:10 }}>
+                      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                        <label style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)" }}>TAXII Server URL</label>
+                        <input value={taxiiServer} onChange={e => setTaxiiServer(e.target.value)}
+                          style={{ background:"var(--surface)", border:"1px solid var(--border)", color:"var(--text)", padding:"10px 14px", borderRadius:3, fontFamily:"var(--font-mono)", fontSize:12, outline:"none" }}/>
+                      </div>
+                      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                        <label style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)" }}>API Key (optional)</label>
+                        <input value={taxiiApiKey} onChange={e => setTaxiiApiKey(e.target.value)}
+                          style={{ background:"var(--surface)", border:"1px solid var(--border)", color:"var(--text)", padding:"10px 14px", borderRadius:3, fontFamily:"var(--font-mono)", fontSize:12, outline:"none" }}/>
+                      </div>
+                    </div>
+                    <button onClick={triggerTaxiiIngestion} disabled={taxiiLoading}
+                      style={{ background:taxiiLoading?"rgba(0,212,255,0.12)":"linear-gradient(90deg,rgba(0,212,255,0.15),rgba(0,212,255,0.08))",
+                        border:"1px solid var(--accent)", color:"var(--accent)", padding:"14px 22px", fontFamily:"var(--font-head)", fontSize:12, fontWeight:700, letterSpacing:2, cursor:taxiiLoading?"default":"pointer", borderRadius:4, minWidth:180 }}>
+                      {taxiiLoading ? "INGESTING..." : "TRIGGER TAXII INGESTION"}
+                    </button>
+                  </div>
+                  {taxiiResult && (
+                    <div style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--text)", marginTop:14, padding:"12px 14px", background:"rgba(0,212,255,0.05)", borderRadius:4, border:"1px solid rgba(0,212,255,0.12)" }}>
+                      <div><strong>Status:</strong> {taxiiResult.status}</div>
+                      {taxiiResult.message && <div style={{ marginTop:8 }}>{taxiiResult.message}</div>}
+                      {taxiiResult.result && (
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,minmax(120px,1fr))", gap:10, marginTop:10 }}>
+                          <div>Fetched: {taxiiResult.result.fetched}</div>
+                          <div>Stored: {taxiiResult.result.stored}</div>
+                          <div>Duplicates: {taxiiResult.result.duplicates}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </Panel>
+              )}
               <Panel title="IOC INDICATOR DATABASE">
                 <IOCTable iocs={filteredIocs}/>
                 <div style={{ display:"flex", gap:12, justifyContent:"center", marginTop:16 }}>

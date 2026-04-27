@@ -147,6 +147,16 @@ class AnomalyDetector:
 
         features = _load_all_features()
         n = len(features)
+        if n == 0:
+            if force:
+                return {
+                    "status":"error",
+                    "message":"No training data available. Collect at least one event before forcing training.",
+                    "sample_count": 0,
+                    "required": MIN_TRAIN_SAMPLES,
+                }
+            return {"status":"insufficient_data","sample_count":0,
+                    "required":MIN_TRAIN_SAMPLES}
         if n < MIN_TRAIN_SAMPLES and not force:
             return {"status":"insufficient_data","sample_count":n,
                     "required":MIN_TRAIN_SAMPLES}

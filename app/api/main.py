@@ -112,6 +112,7 @@ class TAXIIIngestRequest(BaseModel):
     api_key:     Optional[str] = Field(None)
     use_delta:   bool          = Field(True)
     max_objects: Optional[int] = Field(None)
+    background: bool          = Field(True, description="Run ingestion in background and return immediately")
 
 
 class FileIngestRequest(BaseModel):
@@ -484,18 +485,47 @@ def ingest_from_taxii(
     background_tasks: BackgroundTasks,
     user:             dict = Depends(require_role("analyst")),
 ):
-    def _ingest():
-        try:
-            TAXIIClient(server_url=request.server_url, username=request.username,
-                        password=request.password, api_key=request.api_key
-                        ).ingest_all_collections(
-                use_delta=request.use_delta,
-                max_objects_per_collection=request.max_objects)
-        except Exception as e:
-            logger.error("TAXII ingestion failed: %s", str(e))
-    background_tasks.add_task(_ingest)
-    return {"status": "accepted", "message": "TAXII ingestion started.",
-            "server": request.server_url}
+    if request.background:
+        def _ingest():
+            try:
+                cfg = {
+                    "name": "Manual TAXII",
+                    "url": request.server_url,
+                    "auth_type": request.api_key and "api_key" or request.username and "basic" or "none",
+                    "api_key": request.api_key or "",
+                    "username": request.username or "",
+                    "password": request.password or "",
+                }
+                TAXIIClient(cfg).ingest_all_collections(
+                    use_delta=request.use_delta,
+                    max_objects=request.max_objects)
+            except Exception as e:
+                logger.error("TAXII ingestion failed: %s", str(e))
+        background_tasks.add_task(_ingest)
+        return {"status": "accepted", "message": "TAXII ingestion started.",
+                "server": request.server_url}
+
+    try:
+        cfg = {
+            "name": "Manual TAXII",
+            "url": request.server_url,
+            "auth_type": request.api_key and "api_key" or request.username and "basic" or "none",
+            "api_key": request.api_key or "",
+            "username": request.username or "",
+            "password": request.password or "",
+        }
+        result = TAXIIClient(cfg).ingest_all_collections(
+            use_delta=request.use_delta,
+            max_objects=request.max_objects)
+        return {
+            "status": "completed",
+            "message": "TAXII ingestion completed.",
+            "server": request.server_url,
+            "result": result,
+        }
+    except Exception as e:
+        logger.error("TAXII ingestion failed: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/ingest/trigger", tags=["Ingestion"])

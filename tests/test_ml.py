@@ -237,6 +237,13 @@ class TestAnomalyDetector:
         # Should succeed (1 sample is enough for IsolationForest with force)
         assert result["status"] in ("trained", "error")
 
+    def test_force_train_with_zero_samples_returns_error(self):
+        """Force=True with no saved events should return a clear error."""
+        d = self._make_detector()
+        result = d.train(force=True)
+        assert result["status"] == "error"
+        assert "No training data available" in result["message"]
+
     def test_train_succeeds_with_enough_data(self):
         """Add 15 events then train — should succeed."""
         d = self._make_detector()

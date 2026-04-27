@@ -246,6 +246,22 @@ class TestIngestionEndpoints:
         assert r.status_code == 200
         assert r.json()["status"] == "accepted"
 
+    def test_taxii_ingest_endpoint_accepts_request(self, api_client, analyst_token, monkeypatch):
+        from app.ingestion.taxii_client import TAXIIFeedClient
+
+        def mock_ingest_all_collections(self, use_delta=True, max_objects=None):
+            return {"status": "success", "fetched": 0, "stored": 0, "duplicates": 0}
+
+        monkeypatch.setattr(TAXIIFeedClient, "ingest_all_collections", mock_ingest_all_collections)
+        r = api_client.post("/ingest/taxii", headers=_h(analyst_token), json={
+            "server_url": "https://example.com/taxii/",
+            "api_key": "abc123",
+            "use_delta": False,
+            "max_objects": 10,
+        })
+        assert r.status_code == 200
+        assert r.json()["status"] == "accepted"
+
     def test_ingest_no_token_returns_401(self, api_client):
         r = api_client.post("/ingest/trigger")
         assert r.status_code == 401
