@@ -60,6 +60,15 @@ from typing import Optional
 from datetime import datetime, timezone
 import os
 
+# Load .env file before any app module is imported.
+# This ensures JWT_SECRET_KEY and all other settings are in os.environ
+# when security.py reads them at import time.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # looks for .env in cwd (project root)
+except ImportError:
+    pass  # python-dotenv not installed — rely on environment variables set externally
+
 from app.database import (
     create_tables, get_all_iocs, get_correlation_results,
     get_db_stats, insert_indicators,
