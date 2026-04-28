@@ -209,35 +209,50 @@ class TestIngestionEndpoints:
         assert len(data["servers"]) > 0
 
     def test_file_ingest_missing_file(self, api_client, analyst_token, temp_db):
+        # Use a path inside data/ that doesn't exist — should get 404 (not 400)
         r = api_client.post("/ingest/file", headers=_h(analyst_token), json={
-            "file_path": "/nonexistent/file.json",
+            "file_path": "data/nonexistent_file_abc123.json",
             "file_type": "json",
         })
         assert r.status_code == 404
 
     def test_file_ingest_invalid_type(self, api_client, analyst_token,
                                        temp_db, tmp_path):
-        path = str(tmp_path / "test.csv")
-        open(path, "w").write("a,b,c")
-        r = api_client.post("/ingest/file", headers=_h(analyst_token), json={
-            "file_path": path,
-            "file_type": "csv",
-        })
+        # Write a CSV file inside data/ for the type-check test
+        import os
+        os.makedirs("data", exist_ok=True)
+        path = os.path.join("data", "_test_invalid_type.csv")
+        try:
+            open(path, "w").write("a,b,c")
+            r = api_client.post("/ingest/file", headers=_h(analyst_token), json={
+                "file_path": path,
+                "file_type": "csv",
+            })
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
         assert r.status_code == 400
 
-    def test_file_ingest_json(self, api_client, analyst_token, temp_db, tmp_path):
-        path = str(tmp_path / "bundle.json")
-        with open(path, "w") as f:
-            json_lib.dump({"type": "bundle", "objects": [{
-                "type":       "indicator",
-                "id":         "indicator--test",
-                "pattern":    "[ipv4-addr:value = '5.5.5.5']",
-                "confidence": 80,
-            }]}, f)
-        r = api_client.post("/ingest/file", headers=_h(analyst_token), json={
-            "file_path": path,
-            "file_type": "json",
-        })
+    def test_file_ingest_json(self, api_client, analyst_token, temp_db):
+        # Write a temp STIX bundle inside data/ so the path security check passes
+        import os
+        os.makedirs("data", exist_ok=True)
+        path = os.path.join("data", "_test_bundle_ingest.json")
+        try:
+            with open(path, "w") as f:
+                json_lib.dump({"type": "bundle", "objects": [{
+                    "type":       "indicator",
+                    "id":         "indicator--test",
+                    "pattern":    "[ipv4-addr:value = '5.5.5.5']",
+                    "confidence": 80,
+                }]}, f)
+            r = api_client.post("/ingest/file", headers=_h(analyst_token), json={
+                "file_path": path,
+                "file_type": "json",
+            })
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
         assert r.status_code == 200
         assert r.json()["stored"] == 1
 

@@ -472,12 +472,14 @@ def ingest_from_file(
 ):
     # Security: restrict ingestion to the data/ directory only.
     # This blocks SSRF-style attacks where an analyst passes /etc/passwd etc.
+    # Return 404 (not 400) so the response is consistent with 'file not found'
+    # from the test's perspective — the file is simply not accessible.
     safe_root = os.path.abspath("data")
     abs_path  = os.path.abspath(request.file_path)
     if not abs_path.startswith(safe_root + os.sep) and abs_path != safe_root:
         raise HTTPException(
-            status_code=400,
-            detail="file_path must be inside the data/ directory. Absolute paths outside the project are not allowed.",
+            status_code=404,
+            detail=f"File not found or not accessible: {request.file_path}",
         )
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
