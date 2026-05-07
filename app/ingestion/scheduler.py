@@ -10,7 +10,7 @@ Mentor requirement (Module 1 + Module 2 integration):
   data without any manual POST /event calls.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def ioc_to_event(ioc: dict, feed_name: str = "taxii") -> dict:
         "source_port":      0,
         "destination_port": hints["destination_port"],
         "protocol":         hints["protocol"],
-        "timestamp":        ioc.get("first_seen") or datetime.utcnow().isoformat(),
+        "timestamp":        ioc.get("first_seen") or datetime.now(timezone.utc).isoformat(),
         "ioc_match_count":  1,           # it IS an IOC, so count = 1
         "risk_score":       confidence,  # confidence maps directly to risk
         "ioc_origin":       True,        # flag for downstream filtering
@@ -117,9 +117,37 @@ class IngestionScheduler:
             from app.ingestion.taxii_client import MultiFeedIngester
             result = MultiFeedIngester().ingest_all(delta_hours=24)
 
-            self.last_run    = datetime.utcnow().isoformat()
+            self.last_run    = datetime.now(timezone.utc).isoformat()
             self.total_runs += 1
             self.last_result = result
+
+            # ── Priority 2: Fallback IOC server ──────────────────────────────
+            # Triggered ONLY when ALL live TAXII feeds stored 0 IOCs.
+            # Mentor: "If live feeds fail, use internal server as fallback."
+            try:
+                live_stored = result.get("total_stored", 0)
+                if live_stored == 0:
+                    logger.info(
+                        "Live feeds returned 0 IOCs — trying fallback server..."
+                    )
+                    from app.ingestion.fallback_client import fetch_and_store
+                    fallback_result = fetch_and_store()
+                    self.last_result["fallback"] = fallback_result
+                    if fallback_result.get("stored", 0) > 0:
+                        logger.info(
+                            "Fallback server: stored %d IOCs",
+                            fallback_result["stored"],
+                        )
+                    else:
+                        logger.warning(
+                            "Fallback server also returned 0 IOCs. Error: %s",
+                            fallback_result.get("error", "none"),
+                        )
+                else:
+                    self.last_result["fallback"] = {"skipped": True,
+                                                    "reason": "live feeds succeeded"}
+            except Exception as e:
+                logger.warning("Fallback client failed (non-fatal): %s", e)
 
             # Mentor requirement: expire outdated IOCs after every run
             try:
@@ -129,6 +157,44 @@ class IngestionScheduler:
                 logger.info("IOC expiry: %s", expiry)
             except Exception as e:
                 logger.warning("IOC expiry failed (non-fatal): %s", e)
+
+            # Mentor requirement: check offline IOC watch folder every cycle
+            try:
+                from app.ingestion.file_watcher import process_watch_folder
+                watch_result = process_watch_folder()
+                self.last_result["file_watcher"] = {
+                    "files_found":     watch_result.get("files_found", 0),
+                    "files_processed": watch_result.get("files_processed", 0),
+                    "total_stored":    watch_result.get("total_stored", 0),
+                }
+                if watch_result.get("files_found", 0) > 0:
+                    logger.info(
+                        "File watcher: found=%d processed=%d stored=%d",
+                        watch_result.get("files_found", 0),
+                        watch_result.get("files_processed", 0),
+                        watch_result.get("total_stored", 0),
+                    )
+            except Exception as e:
+                logger.warning("File watcher failed (non-fatal): %s", e)
+
+            # Mentor requirement: scan log files for IOC matches every cycle
+            try:
+                from app.ingestion.log_watcher import scan_configured_logs
+                log_result = scan_configured_logs()
+                self.last_result["log_watcher"] = {
+                    "files_scanned": log_result.get("files_scanned", 0),
+                    "total_hits":    log_result.get("total_hits", 0),
+                    "saved_to_db":   log_result.get("saved_to_db", 0),
+                }
+                if log_result.get("total_hits", 0) > 0:
+                    logger.info(
+                        "Log watcher: scanned=%d files, hits=%d, saved=%d",
+                        log_result.get("files_scanned", 0),
+                        log_result.get("total_hits", 0),
+                        log_result.get("saved_to_db", 0),
+                    )
+            except Exception as e:
+                logger.warning("Log watcher failed (non-fatal): %s", e)
 
             # Mentor requirement: feed stored IOCs into the ML pipeline
             # Re-fetch the same delta window and pass every parsed IOC through
@@ -191,18 +257,14 @@ class IngestionScheduler:
                 next_run = str(job.next_run_time)
         except Exception:
             pass
+        from app.ingestion.taxii_client import get_configured_feeds
         return {
             "is_running":  self.is_running,
             "total_runs":  self.total_runs,
             "last_run":    self.last_run,
             "next_run":    next_run,
             "last_result": self.last_result,
-            "feeds": [
-                f["name"] for f in __import__(
-                    "app.ingestion.taxii_client",
-                    fromlist=["get_configured_feeds"],
-                ).get_configured_feeds()
-            ],
+            "feeds": [f["name"] for f in get_configured_feeds()],
         }
 
 
