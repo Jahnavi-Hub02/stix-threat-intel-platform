@@ -7,7 +7,7 @@ test:
 	pytest
 
 run:
-	python run.py
+	uvicorn app.api.main:app --reload --port 8000
 
 clean:
 	find . -type f -name "*.pyc" -delete
@@ -19,9 +19,6 @@ lint:
 
 format:
 	black app/ tests/
-
-build:
-	python -m build
 
 docker-build:
 	docker build -t stix-threat-intel .

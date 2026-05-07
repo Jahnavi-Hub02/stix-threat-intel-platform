@@ -19,10 +19,7 @@ authors = [
 where = ["."]
 include = ["app*"]
 
-[tool.pytest.ini_options]
-minversion = "6.0"
-addopts = "-ra -q"
-testpaths = ["tests"]
+# Pytest config lives in pytest.ini (markers, warning filters, etc.)
 
 [tool.black]
 line-length = 88

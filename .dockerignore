@@ -1,0 +1,41 @@
+# Dependencies & virtual environments
+.venv/
+venv/
+node_modules/
+frontend/node_modules/
+
+# Version control
+.git/
+.gitignore
+
+# IDE & editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime artifacts — these should be Docker volumes, not baked into the image
+database/*.db
+models/*.pkl
+reports/*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# CI/CD
+.github/
+
+# Documentation & config not needed at runtime
+*.md
+docker-compose*.yml
+.env
+.env.example
+Makefile

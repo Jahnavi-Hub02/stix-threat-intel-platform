@@ -61,7 +61,7 @@ frontend/.vite/
 /node_modules/
 
 # ── Docker ────────────────────────────────────────────────────────
-.dockerignore
+# .dockerignore is version-controlled — do NOT ignore it
 
 # ── IDEs & Editors ────────────────────────────────────────────────
 .vscode/
@@ -76,14 +76,5 @@ Thumbs.db
 *.log
 logs/
 
-# ── Dev utility scripts (moved to scripts/ — not meant for root) ──
-# These were at the repo root; they now live in scripts/.
-# Listing here as a safeguard so accidental root copies are ignored.
-/create_clean_zip.py
-/fix_main.py
-/cleanup.py
-/cleanup_now.py
-
-# ── pytest cache ──────────────────────────────────────────────────
-.pytest_cache/
+# ── Archives ──────────────────────────────────────────────────────
 *.zip
