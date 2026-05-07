@@ -53,6 +53,26 @@ def create_connection():
     return conn
 
 
+def get_connection():
+    """Context manager for safe DB connection handling.
+
+    Usage:
+        with get_connection() as conn:
+            conn.execute("SELECT ...")
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _ctx():
+        conn = create_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    return _ctx()
+
+
 def create_tables():
     """Create all required database tables if they don't exist."""
     conn   = create_connection()
@@ -65,28 +85,56 @@ def create_tables():
     # making _lookup_ioc always return None → total_hits always 0.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS ioc_indicators (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        stix_id     TEXT UNIQUE,
-        ioc_type    TEXT,
-        ioc_subtype TEXT,
-        ioc_value   TEXT UNIQUE,
-        confidence  INTEGER DEFAULT 50,
-        severity    TEXT DEFAULT 'medium',
-        source      TEXT,
-        is_active   INTEGER DEFAULT 1,
-        first_seen  TIMESTAMP,
-        last_seen   TIMESTAMP,
-        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        stix_id      TEXT UNIQUE,
+        ioc_type     TEXT,
+        ioc_subtype  TEXT,
+        ioc_value    TEXT UNIQUE,
+        confidence   INTEGER DEFAULT 50,
+        severity     TEXT DEFAULT 'medium',
+        source       TEXT,
+        is_active    INTEGER DEFAULT 1,
+        first_seen   TIMESTAMP,
+        last_seen    TIMESTAMP,
+        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        -- Superset metadata columns (mentor requirement)
+        country      TEXT,
+        geo_lat      REAL,
+        geo_lon      REAL,
+        city         TEXT,
+        asn          TEXT,
+        revoked      INTEGER DEFAULT 0,
+        tlp          TEXT DEFAULT 'GREEN',
+        tags         TEXT,
+        description  TEXT,
+        kill_chain   TEXT,
+        external_refs TEXT
     )
     """)
 
-    # Migration: add severity column to existing DBs that were created without it
-    try:
-        cursor.execute("ALTER TABLE ioc_indicators ADD COLUMN severity TEXT DEFAULT 'medium'")
-        conn.commit()
-        logger.debug("Migration applied: added severity column to ioc_indicators")
-    except Exception:
-        logger.debug("Migration skip: severity column already exists in ioc_indicators")
+    # ── Migrations: safely add new columns to existing databases ──────────
+    # Each ALTER TABLE is wrapped in try/except so it's skipped if column exists.
+    _migrations = [
+        ("ioc_indicators", "severity",      "TEXT DEFAULT 'medium'"),
+        ("ioc_indicators", "country",       "TEXT"),
+        ("ioc_indicators", "geo_lat",        "REAL"),
+        ("ioc_indicators", "geo_lon",        "REAL"),
+        ("ioc_indicators", "city",           "TEXT"),
+        ("ioc_indicators", "asn",            "TEXT"),
+        ("ioc_indicators", "revoked",        "INTEGER DEFAULT 0"),
+        ("ioc_indicators", "tlp",            "TEXT DEFAULT 'GREEN'"),
+        ("ioc_indicators", "tags",           "TEXT"),
+        ("ioc_indicators", "description",   "TEXT"),
+        ("ioc_indicators", "kill_chain",     "TEXT"),
+        ("ioc_indicators", "external_refs",  "TEXT"),
+    ]
+    for table, column, col_def in _migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            conn.commit()
+            logger.debug("Migration applied: added %s.%s", table, column)
+        except Exception:
+            pass   # column already exists — skip silently
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS event_logs (
@@ -183,6 +231,25 @@ def create_tables():
     )
     """)
 
+    # Log scan results — stores matches from background log file scanning
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS log_scan_results (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_file    TEXT,
+        line_number    INTEGER,
+        timestamp      TEXT,
+        log_line       TEXT,
+        matched_ioc    TEXT,
+        ioc_type       TEXT,
+        confidence     INTEGER,
+        severity       TEXT,
+        source_ip      TEXT,
+        destination_ip TEXT,
+        scan_mode      TEXT DEFAULT 'background',
+        detected_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database tables created/verified")
@@ -275,6 +342,70 @@ def update_alert(alert_id: int, new_status: str,
     return get_alert_by_id(alert_id)
 
 
+# ── Log Scan Results ──────────────────────────────────────────────
+
+def save_log_scan_results(hits: list, scan_mode: str = "background") -> int:
+    """Save log scan hit results to the log_scan_results table. Returns count saved."""
+    if not hits:
+        return 0
+    conn   = create_connection()
+    cursor = conn.cursor()
+    saved  = 0
+    for h in hits:
+        ioc = h.get("matched_ioc", {})
+        try:
+            cursor.execute("""
+                INSERT INTO log_scan_results
+                (source_file, line_number, timestamp, log_line,
+                 matched_ioc, ioc_type, confidence, severity,
+                 source_ip, destination_ip, scan_mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                h.get("source_file"),
+                h.get("line_number"),
+                h.get("timestamp"),
+                h.get("log_line", "")[:500],
+                ioc.get("ioc_value"),
+                ioc.get("ioc_type"),
+                ioc.get("confidence"),
+                h.get("severity"),
+                h.get("source_ip"),
+                h.get("destination_ip"),
+                scan_mode,
+            ))
+            saved += 1
+        except Exception as e:
+            logger.debug("save_log_scan_results: skipped row: %s", e)
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def get_log_scan_results(limit: int = 100, offset: int = 0,
+                         severity: str = None,
+                         source_file: str = None) -> list:
+    """Fetch stored log scan results with optional filters."""
+    conn   = create_connection()
+    cursor = conn.cursor()
+    query  = "SELECT * FROM log_scan_results"
+    params = []
+    filters = []
+    if severity:
+        filters.append("severity = ?")
+        params.append(severity)
+    if source_file:
+        filters.append("source_file = ?")
+        params.append(source_file)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY detected_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    cursor.execute(query, params)
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
 # ── IOC Indicators ────────────────────────────────────────────────
 
 def _severity_from_confidence(confidence: int) -> str:
@@ -349,8 +480,10 @@ def insert_indicators(indicators, source_label="Unknown"):
             cursor.execute("""
                 INSERT INTO ioc_indicators
                 (stix_id, ioc_type, ioc_subtype, ioc_value,
-                 confidence, severity, source, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 confidence, severity, source, first_seen, last_seen,
+                 country, geo_lat, geo_lon, city, asn,
+                 revoked, tlp, tags, description, kill_chain, external_refs)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 stix_id,
                 ind.get("ioc_type", "unknown"),
@@ -359,7 +492,19 @@ def insert_indicators(indicators, source_label="Unknown"):
                 confidence,
                 severity,
                 ind.get("source", source_label),
-                now, now
+                now, now,
+                # Superset metadata
+                ind.get("country"),
+                ind.get("geo_lat"),
+                ind.get("geo_lon"),
+                ind.get("city"),
+                ind.get("asn"),
+                1 if ind.get("revoked") else 0,
+                ind.get("tlp", "GREEN"),
+                ind.get("tags"),
+                ind.get("description"),
+                ind.get("kill_chain"),
+                ind.get("external_refs"),
             ))
             total_stored += 1
 
@@ -411,19 +556,36 @@ def save_event(event: dict) -> bool:
     return True
 
 
-def get_all_iocs(limit=100, offset=0, ioc_type=None):
+def get_all_iocs(limit=100, offset=0, ioc_type=None,
+                 severity=None, country=None,
+                 confidence_min=None, source=None):
+    """Fetch IOCs with optional superset filters."""
     conn   = create_connection()
     cursor = conn.cursor()
+
+    filters, params = ["is_active = 1"], []
     if ioc_type:
-        cursor.execute(
-            "SELECT * FROM ioc_indicators WHERE ioc_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (ioc_type, limit, offset)
-        )
-    else:
-        cursor.execute(
-            "SELECT * FROM ioc_indicators ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
+        filters.append("ioc_type = ?")
+        params.append(ioc_type)
+    if severity:
+        filters.append("severity = ?")
+        params.append(severity)
+    if country:
+        filters.append("country = ?")
+        params.append(country.upper())
+    if confidence_min is not None:
+        filters.append("confidence >= ?")
+        params.append(int(confidence_min))
+    if source:
+        filters.append("source LIKE ?")
+        params.append(f"%{source}%")
+
+    where = " WHERE " + " AND ".join(filters) if filters else ""
+    params += [limit, offset]
+    cursor.execute(
+        f"SELECT * FROM ioc_indicators{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        params
+    )
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
@@ -451,49 +613,52 @@ def get_db_stats():
     conn   = create_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM ioc_indicators WHERE is_active = 1")
-    total_iocs = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM event_logs")
-    total_events = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM correlation_results")
-    total_correlations = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'Critical'")
-    critical = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'High'")
-    high = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'Medium'")
-    medium = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM correlation_results WHERE severity = 'Low'")
-    low = cursor.fetchone()[0]
-    cursor.execute("""
-        SELECT matched_ip, COUNT(*) as hit_count
-        FROM correlation_results
-        GROUP BY matched_ip ORDER BY hit_count DESC LIMIT 5
-    """)
-    top_threats = [dict(r) for r in cursor.fetchall()]
-
-    ml_stats = {"total_ml_events": 0, "total_anomalies": 0, "model_trained": False}
     try:
-        cursor.execute("SELECT COUNT(*) FROM ml_events")
-        ml_stats["total_ml_events"] = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM ml_events WHERE is_anomaly = 1")
-        ml_stats["total_anomalies"] = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM ml_model_runs WHERE status = 'success'")
-        ml_stats["model_trained"] = cursor.fetchone()[0] > 0
-    except Exception as e:
-        logger.debug("ML stats tables not yet created: %s", str(e))
+        cursor.execute("SELECT COUNT(*) FROM ioc_indicators WHERE is_active = 1")
+        total_iocs = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM event_logs")
+        total_events = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM correlation_results")
+        total_correlations = cursor.fetchone()[0]
 
-    conn.close()
+        # Consolidated: one query instead of four separate severity count queries
+        severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        cursor.execute("""
+            SELECT LOWER(severity) as sev, COUNT(*) as cnt
+            FROM correlation_results
+            GROUP BY LOWER(severity)
+        """)
+        for row in cursor.fetchall():
+            sev = row[0]
+            if sev in severity_breakdown:
+                severity_breakdown[sev] = row[1]
+
+        cursor.execute("""
+            SELECT matched_ip, COUNT(*) as hit_count
+            FROM correlation_results
+            GROUP BY matched_ip ORDER BY hit_count DESC LIMIT 5
+        """)
+        top_threats = [dict(r) for r in cursor.fetchall()]
+
+        ml_stats = {"total_ml_events": 0, "total_anomalies": 0, "model_trained": False}
+        try:
+            cursor.execute("SELECT COUNT(*) FROM ml_events")
+            ml_stats["total_ml_events"] = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM ml_events WHERE is_anomaly = 1")
+            ml_stats["total_anomalies"] = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM ml_model_runs WHERE status = 'success'")
+            ml_stats["model_trained"] = cursor.fetchone()[0] > 0
+        except Exception as e:
+            logger.debug("ML stats tables not yet created: %s", str(e))
+
+    finally:
+        conn.close()
+
     return {
         "total_iocs": total_iocs,
         "total_events": total_events,
         "total_correlations": total_correlations,
-        "severity_breakdown": {
-            "critical": critical,
-            "high":     high,
-            "medium":   medium,
-            "low":      low,
-        },
+        "severity_breakdown": severity_breakdown,
         "top_threats": top_threats,
         "ml": ml_stats,
     }

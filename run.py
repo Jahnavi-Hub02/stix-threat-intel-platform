@@ -13,6 +13,15 @@ Usage:
 
 import json
 import os
+
+# Load .env before importing app modules — ensures JWT_SECRET_KEY etc.
+# are available when security.py reads them at import time.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from app.database import create_tables, insert_indicators
 from app.normalization import parse_stix_json, parse_stix_xml
 from app.correlation import correlate_event

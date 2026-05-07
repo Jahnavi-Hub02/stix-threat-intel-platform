@@ -39,13 +39,13 @@ Prediction (online, live events only):
 from app.ml.classifier import (
     train,                  # train RF on NSL-KDD / CICIDS2017 dataset
     predict,                # classify a single live event dict
-    extract_live_features,  # convert live event → 14-feature vector
+    extract_live_features,  # convert live event → 7-feature vector
     status  as clf_status,  # classifier model info + last evaluation
     # Key constants
     NSLKDD_COLS,            # full 43-column NSL-KDD schema
     NSLKDD_MAP,             # 23 attack types → 5 broad categories
-    LIVE_FEATURE_COLS,      # 9 NSL-KDD columns used for training
-    N_LIVE_FEATURES,        # 14 (9 NSL-KDD + 5 derived)
+    LIVE_FEATURE_COLS,      # 7 NSL-KDD columns used for training
+    N_LIVE_FEATURES,        # 7 (aligned between training and prediction)
     ATTACK_RISK,            # risk score contribution per attack class
     CLF_PATH,               # path to saved RF model file
     EVAL_PATH,              # path to rf_evaluation.json

@@ -166,14 +166,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# Note: Starlette CORSMiddleware does NOT support wildcards like https://*.onrender.com
+# in allow_origins. Use allow_origin_regex for wildcard subdomain matching.
+_cors_origins = [
+    o for o in [
         "http://localhost:3000",
         "http://localhost:5173",
-        "https://*.onrender.com",
         os.getenv("FRONTEND_URL", ""),
-    ],
+    ] if o  # filter out empty strings
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -227,14 +232,43 @@ def get_metrics(user: dict = Depends(verify_token)):
 
 @app.get("/iocs", tags=["IOCs"])
 def list_iocs(
-    limit:    int           = Query(50, ge=1, le=500),
-    offset:   int           = Query(0, ge=0),
-    ioc_type: Optional[str] = Query(None),
-    user:     dict          = Depends(verify_token),
+    limit:          int           = Query(50, ge=1, le=500),
+    offset:         int           = Query(0, ge=0),
+    ioc_type:       Optional[str] = Query(None, description="Filter by type: ipv4-addr, domain-name, url, file-hash"),
+    severity:       Optional[str] = Query(None, description="Filter by severity: critical, high, medium, low"),
+    country:        Optional[str] = Query(None, description="Filter by country code, e.g. CN, RU, US"),
+    confidence_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum confidence score (0-100)"),
+    source:         Optional[str] = Query(None, description="Filter by source name (partial match)"),
+    user:           dict          = Depends(verify_token),
 ):
-    iocs = get_all_iocs(limit=limit, offset=offset, ioc_type=ioc_type)
-    return {"total": len(iocs), "limit": limit, "offset": offset,
-            "ioc_type_filter": ioc_type, "iocs": iocs}
+    """
+    List stored IOCs with optional filters.
+
+    New superset filters (mentor requirement):
+      - severity       : critical / high / medium / low
+      - country        : country code e.g. CN, RU, US
+      - confidence_min : only IOCs with confidence >= this value
+      - source         : partial match on source name
+    """
+    iocs = get_all_iocs(
+        limit=limit, offset=offset,
+        ioc_type=ioc_type, severity=severity,
+        country=country, confidence_min=confidence_min,
+        source=source,
+    )
+    return {
+        "total":  len(iocs),
+        "limit":  limit,
+        "offset": offset,
+        "filters": {
+            "ioc_type":       ioc_type,
+            "severity":       severity,
+            "country":        country,
+            "confidence_min": confidence_min,
+            "source":         source,
+        },
+        "iocs": iocs,
+    }
 
 
 # ⚠ ROUTE ORDER MATTERS — do NOT move these routes.
@@ -304,11 +338,13 @@ def expire_iocs(
 @app.get("/iocs/{ioc_value:path}", tags=["IOCs"])
 def lookup_ioc(ioc_value: str, user: dict = Depends(verify_token)):
     from app.database.db_manager import create_connection
-    conn   = create_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM ioc_indicators WHERE ioc_value = ?", (ioc_value,))
-    row = cursor.fetchone()
-    conn.close()
+    conn = create_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM ioc_indicators WHERE ioc_value = ?", (ioc_value,))
+        row = cursor.fetchone()
+    finally:
+        conn.close()
     if not row:
         raise HTTPException(status_code=404, detail=f"IOC '{ioc_value}' not found.")
     return {"status": "found", "ioc": dict(row)}
@@ -431,16 +467,14 @@ def download_report(event_id: str, user: dict = Depends(verify_token)):
             status_code=400,
             detail="Invalid event_id: only alphanumeric characters, hyphens, underscores, and dots are allowed.",
         )
-    # Reports are saved under reports/ by generate_report() — look there first,
-    # then fall back to cwd for backward compatibility with older deployments.
+    # Reports are saved under reports/ by generate_report().
+    # No cwd fallback — reports must live in the reports/ directory only.
     report_filename = f"Threat_Report_{event_id}.pdf"
     reports_dir     = os.path.abspath("reports")
     report_path     = os.path.join(reports_dir, report_filename)
     # Ensure the resolved path stays inside reports/ (extra safety belt)
     if not os.path.abspath(report_path).startswith(reports_dir):
         raise HTTPException(status_code=400, detail="Invalid report path.")
-    if not os.path.exists(report_path):
-        report_path = report_filename          # cwd fallback
     if not os.path.exists(report_path):
         raise HTTPException(status_code=404,
                             detail=f"Report for '{event_id}' not found.")

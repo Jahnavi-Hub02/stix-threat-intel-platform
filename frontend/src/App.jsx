@@ -402,7 +402,7 @@ function IOCTable({ iocs }) {
       No IOCs found
     </div>
   );
-  const typeColor = { ipv4:"#00d4ff", domain:"#00ff9f", url:"#ffd700", sha256:"#ff8c42", md5:"#ff3c6e" };
+  const typeColor = { "ipv4-addr":"#00d4ff", "domain-name":"#00ff9f", "url":"#ffd700", "file-hash":"#ff8c42", "email-addr":"#ff3c6e" };
   return (
     <div style={{ overflowX:"auto" }}>
       <table style={{ width:"100%", borderCollapse:"collapse" }}>
@@ -749,11 +749,11 @@ export default function App() {
                   style={{ background:"var(--panel)", border:"1px solid var(--border)", color:"var(--text)",
                     padding:"8px 14px", borderRadius:2, fontFamily:"var(--font-mono)", fontSize:12, outline:"none" }}>
                   <option value="">ALL TYPES</option>
-                  <option value="ipv4">IPv4</option>
-                  <option value="domain">DOMAIN</option>
+                  <option value="ipv4-addr">IPv4</option>
+                  <option value="domain-name">DOMAIN</option>
                   <option value="url">URL</option>
-                  <option value="sha256">SHA-256</option>
-                  <option value="md5">MD5</option>
+                  <option value="file-hash">FILE HASH</option>
+                  <option value="email-addr">EMAIL</option>
                 </select>
                 <div style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--muted)", marginLeft:"auto" }}>
                   Showing {filteredIocs.length} of {stats.total_iocs?.toLocaleString()} IOCs
