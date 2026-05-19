@@ -49,7 +49,7 @@ def _ensure_folders(watch: str, processed: str) -> None:
 def _move_to_processed(filepath: Path, processed_folder: str) -> str:
     """
     Move a processed file to the processed folder with a timestamp suffix.
-    Example: TI_GOV.json → data/ioc_processed/TI_GOV_done_20260504_062200.json
+    Example: feed_data.json → data/ioc_processed/feed_data_done_20260504_062200.json
     """
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     stem = filepath.stem          # filename without extension

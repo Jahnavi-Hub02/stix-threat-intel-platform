@@ -98,7 +98,7 @@ def _lookup_ioc(value: str) -> Optional[Dict]:
         row  = conn.execute(
             """SELECT ioc_type, ioc_value, confidence, severity, source, last_seen
                FROM ioc_indicators
-               WHERE ioc_value = ? AND is_active = 1""",
+               WHERE ioc_value = ? AND is_active = 1 AND revoked = 0""",
             (value,)
         ).fetchone()
         conn.close()
@@ -124,7 +124,7 @@ def _load_ioc_cache() -> Dict[str, Dict]:
         conn = dbm.create_connection()
         rows = conn.execute(
             """SELECT ioc_type, ioc_value, confidence, severity, source, last_seen
-               FROM ioc_indicators WHERE is_active = 1"""
+               FROM ioc_indicators WHERE is_active = 1 AND revoked = 0"""
         ).fetchall()
         conn.close()
         return {

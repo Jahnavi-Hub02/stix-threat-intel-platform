@@ -250,6 +250,21 @@ def create_tables():
     )
     """)
 
+    # Log file checksum tracking — avoids reprocessing unchanged log files.
+    # Stores MD5 hash + file offset so the log watcher can skip files
+    # that haven't changed since the last scan cycle.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS log_file_checksums (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path      TEXT UNIQUE NOT NULL,
+        checksum       TEXT NOT NULL,
+        file_size      INTEGER DEFAULT 0,
+        last_offset    INTEGER DEFAULT 0,
+        last_scanned   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database tables created/verified")
@@ -404,6 +419,42 @@ def get_log_scan_results(limit: int = 100, offset: int = 0,
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
+
+
+# ── Log File Checksum Tracking ────────────────────────────────────
+
+def get_log_file_checksum(file_path: str) -> dict | None:
+    """Retrieve the stored checksum record for a log file."""
+    conn = create_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT file_path, checksum, file_size, last_offset, last_scanned "
+        "FROM log_file_checksums WHERE file_path = ?",
+        (file_path,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@_retry_db_write
+def upsert_log_file_checksum(file_path: str, checksum: str,
+                             file_size: int, last_offset: int) -> None:
+    """Insert or update the checksum record for a log file."""
+    conn = create_connection()
+    now = _now()
+    conn.execute("""
+        INSERT INTO log_file_checksums (file_path, checksum, file_size, last_offset, last_scanned, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_path) DO UPDATE SET
+            checksum     = excluded.checksum,
+            file_size    = excluded.file_size,
+            last_offset  = excluded.last_offset,
+            last_scanned = excluded.last_scanned,
+            updated_at   = excluded.updated_at
+    """, (file_path, checksum, file_size, last_offset, now, now))
+    conn.commit()
+    conn.close()
 
 
 # ── IOC Indicators ────────────────────────────────────────────────

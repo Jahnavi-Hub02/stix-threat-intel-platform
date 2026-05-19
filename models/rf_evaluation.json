@@ -1,7 +1,7 @@
 {
-  "trained_at": "2026-05-07T06:18:12.611604+00:00",
+  "trained_at": "2026-05-19T11:32:34.914732+00:00",
   "dataset_type": "nslkdd",
-  "dataset_path": "C:\\Users\\jaanu\\AppData\\Local\\Temp\\pytest-of-jaanu\\pytest-117\\test_minimal_event_no_crash0\\KDDTrain.txt",
+  "dataset_path": "C:\\Users\\jaanu\\AppData\\Local\\Temp\\pytest-of-jaanu\\pytest-122\\test_minimal_event_no_crash0\\KDDTrain.txt",
   "total_samples": 160,
   "train_samples": 160,
   "test_samples": 40,

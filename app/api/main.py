@@ -497,13 +497,15 @@ def manual_ingest(
     For live feeds use POST /ingest/taxii or let the scheduler run.
     """
     results = {"json": 0, "xml": 0}
-    if feed_type in ["json", "both"] and os.path.exists("data/TI_GOV.json"):
-        r = insert_indicators(parse_stix_json("data/TI_GOV.json")) or {"stored": 0}
+    json_sample = os.getenv("SAMPLE_IOC_JSON", "data/sample_iocs.json")
+    xml_sample  = os.getenv("SAMPLE_IOC_XML",  "data/sample_iocs.xml")
+    if feed_type in ["json", "both"] and os.path.exists(json_sample):
+        r = insert_indicators(parse_stix_json(json_sample)) or {"stored": 0}
         results["json"] = r.get("stored", 0)
-    if feed_type == "both" and os.path.exists("data/certin_ti_gov.xml"):
+    if feed_type == "both" and os.path.exists(xml_sample):
         # Legacy XML file — retained for backward compatibility only.
-        # The mentor-preferred approach is TAXII 2.x JSON via /ingest/taxii.
-        r = insert_indicators(parse_stix_xml("data/certin_ti_gov.xml")) or {"stored": 0}
+        # The preferred approach is TAXII 2.x JSON via /ingest/taxii.
+        r = insert_indicators(parse_stix_xml(xml_sample)) or {"stored": 0}
         results["xml"] = r.get("stored", 0)
     return {"timestamp": _now(), "ingestion_results": results}
 
