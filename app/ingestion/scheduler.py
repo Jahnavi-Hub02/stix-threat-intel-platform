@@ -1,14 +1,3 @@
-"""
-app/ingestion/scheduler.py
-APScheduler background scheduler — runs MultiFeedIngester every 30 minutes.
-Also runs IOC expiry cleanup after each ingestion.
-
-Mentor requirement (Module 1 + Module 2 integration):
-  After each IOC is stored, it is converted into an event dict and passed
-  to get_detector().analyze() so that ml_events is populated automatically.
-  This lets the Isolation Forest accumulate training samples from live TAXII
-  data without any manual POST /event calls.
-"""
 import logging
 from datetime import datetime, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -123,7 +112,7 @@ class IngestionScheduler:
 
             # ── Priority 2: Fallback IOC server ──────────────────────────────
             # Triggered ONLY when ALL live TAXII feeds stored 0 IOCs.
-            # Mentor: "If live feeds fail, use internal server as fallback."
+            # "If live feeds fail, use internal server as fallback."
             try:
                 live_stored = result.get("total_stored", 0)
                 if live_stored == 0:
@@ -149,7 +138,7 @@ class IngestionScheduler:
             except Exception as e:
                 logger.warning("Fallback client failed (non-fatal): %s", e)
 
-            # Mentor requirement: expire outdated IOCs after every run
+            #  expire outdated IOCs after every run
             try:
                 from app.ingestion.ioc_manager import expire_outdated_iocs
                 expiry = expire_outdated_iocs(max_age_days=30)
@@ -158,7 +147,7 @@ class IngestionScheduler:
             except Exception as e:
                 logger.warning("IOC expiry failed (non-fatal): %s", e)
 
-            # Mentor requirement: check offline IOC watch folder every cycle
+            # check offline IOC watch folder every cycle
             try:
                 from app.ingestion.file_watcher import process_watch_folder
                 watch_result = process_watch_folder()
@@ -177,7 +166,7 @@ class IngestionScheduler:
             except Exception as e:
                 logger.warning("File watcher failed (non-fatal): %s", e)
 
-            # Mentor requirement: scan log files for IOC matches every cycle
+            # scan log files for IOC matches every cycle
             try:
                 from app.ingestion.log_watcher import scan_configured_logs
                 log_result = scan_configured_logs()
@@ -196,7 +185,7 @@ class IngestionScheduler:
             except Exception as e:
                 logger.warning("Log watcher failed (non-fatal): %s", e)
 
-            # Mentor requirement: feed stored IOCs into the ML pipeline
+            # feed stored IOCs into the ML pipeline
             # Re-fetch the same delta window and pass every parsed IOC through
             # the anomaly detector so ml_events grows without manual API calls.
             try:
